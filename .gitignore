@@ -1,0 +1,46 @@
+# ===================================================================
+#  حَصاد AI — Hassad AI (root safety net)
+#  backend/.gitignore has the detailed rules; this file guarantees that
+#  secrets and local data can NEVER be committed from any directory.
+# ===================================================================
+
+# --- Secrets (NEVER COMMIT — keys live only in local .env) -----------
+.env
+.env.*
+!.env.example
+
+# --- Local databases & data -----------------------------------------
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data/
+var/
+
+# --- Farmer photos (privacy) ----------------------------------------
+uploads/
+media/
+
+# --- Python ----------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node (only if tooling is ever added) ---------------------------
+node_modules/
+
+# --- Logs, editors & OS ---------------------------------------------
+*.log
+logs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

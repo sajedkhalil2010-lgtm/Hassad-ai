@@ -1,0 +1,42 @@
+# ===================================================================
+#  حَصاد AI — Hassad AI backend · Python dependencies
+#  Tested on Python 3.10 – 3.14 (Windows / Linux / Docker)
+#  Install:  pip install -r requirements.txt
+# ===================================================================
+
+# --- Web framework ---------------------------------------------------
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+python-multipart>=0.0.9,<1.0.0            # multipart file uploads (Crop Doctor)
+
+# --- Configuration / validation --------------------------------------
+pydantic>=2.9.0,<3.0.0
+pydantic-settings>=2.5.0,<3.0.0            # secure .env / env-var loading
+email-validator>=2.1.0,<3.0.0              # EmailStr
+python-dotenv>=1.0.0,<2.0.0
+
+# --- Async database (SQLite now, PostgreSQL/Supabase ready) ----------
+SQLAlchemy>=2.0.35,<3.0.0
+aiosqlite>=0.20.0,<1.0.0                   # SQLite driver
+greenlet>=3.1.0                            # SQLAlchemy asyncio bridge
+asyncpg>=0.29.0,<1.0.0                     # PostgreSQL driver (used when DATABASE_URL=postgresql+asyncpg://...)
+
+# --- Security (JWT + password hashing) -------------------------------
+PyJWT>=2.8.0,<3.0.0
+passlib>=1.7.4,<2.0.0                      # password hashing (bcrypt backend)
+bcrypt>=4.0.1,<6.0.0                       # bcrypt implementation
+
+# --- HTTP client for the free AI APIs --------------------------------
+httpx>=0.27.0,<1.0.0
+
+# --- Computer vision / image validation ------------------------------
+Pillow>=10.4.0                             # decode + EXIF + resize
+numpy>=1.26.0                              # blur (Laplacian variance) detection
+
+# --- Google Gemini (multimodal vision + RAG chatbot, streaming) ------
+google-genai>=1.0.0,<3.0.0
+
+# --- Dev / verification (optional) -----------------------------------
+# pytest>=8.0.0
+# pytest-asyncio>=0.24.0
+# ruff>=0.7.0
