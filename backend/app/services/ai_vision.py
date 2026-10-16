@@ -7,12 +7,13 @@ Responsibilities
    NumPy only, so there is no OpenCV system dependency).
 2. **Treatment plans** — deterministic bilingual (AR/EN) agronomy plans keyed on
    the disease label, so a confirmed diagnosis always ships with actionable
-   guidance even when the vision model is offline. The deep Arabic plan built
-   from the live Gemini vision lives in ``app.services.disease_detector``.
+   guidance even when the vision model is offline. The live plan built from
+   the agent verdict lives in ``app.agents.advisor_agent``.
 
-(The legacy Hugging Face classification chain — slow retries, model
-cold-starts, unreachable on the free tier — has been fully removed; the
-single live vision engine is Google Gemini multimodal.)
+(No API calls live in this module — it is the local knowledge/quality
+layer. All Gemini traffic moved to the v2 multi-agent framework in
+``app.agents``: DiagnosticAgent (vision), AdvisorAgent (plans/chat),
+SupervisorAgent (orchestration), KeyPoolManager (key rotation).)
 """
 
 from __future__ import annotations

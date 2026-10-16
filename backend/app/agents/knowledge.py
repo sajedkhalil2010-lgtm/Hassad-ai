@@ -1,39 +1,29 @@
-"""Agronomy RAG service — Google Gemini **free tier** + local knowledge base.
+"""Knowledge layer — local agronomy RAG over the seeded knowledge base.
 
-Pipeline
---------
-1. **Context enrichment** — the caller's farm/plot/last-diagnosis context is
-   serialised and pre-filled into the prompt.
-2. **Retrieval** — a lightweight, language-agnostic (Arabic + English) lexical
-   scorer ranks ``KnowledgeBase`` excerpts.  No vector DB is required, which
-   keeps the whole stack free-tier and offline-friendly; swap in pgvector later
-   by replacing :func:`retrieve`.
-3. **Generation** — Gemini streams the answer with inline ``[n]`` markers.
-4. **Citations** — markers are mapped back to the retrieved documents and
-   returned as citation cards.
+Moved verbatim from the retired linear ``rag_service``: Arabic-aware
+normalisation, defixing, synonym expansion, the lexical scorer, citation
+cards, prompt assembly, DB loading/context helpers and the seeder.
 
-Security
---------
-``GEMINI_API_KEY`` is read from the environment/.env at *call time* via
-pydantic-settings.  It is never hard-coded, never logged and never echoed back.
-When the key is missing the chatbot degrades to a retrieval-only answer
-(``mode="retrieval_fallback"``) instead of failing — and logs a warning.
+**No API calls live here** — this layer is 100% local and offline; the
+generation it used to drive now belongs to the AdvisorAgent
+(``app.agents.advisor_agent``), which streams answers through the
+KeyPoolManager (multi-key rotation, zero SDK retries).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import Sequence
 from typing import Any
 
-from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.chatbot import KnowledgeBase
 
 logger = logging.getLogger("hassad.rag")
@@ -238,246 +228,6 @@ def build_prompt(
         question=(question or "").strip(),
     )
     return f"{system}\n[Reply language: {'Arabic' if lang == 'ar' else 'English'}]\n\n{user}"
-
-
-# ======================================================================
-# Generation
-# ======================================================================
-def _configure_genai() -> Any:
-    """Build the Gemini client at call time from the runtime key chain.
-
-    Uses the maintained ``google-genai`` SDK — the legacy
-    ``google-generativeai`` package is end-of-life and can no longer reach
-    current models (e.g. ``gemini-3.8-flash``).
-
-    The first configured key is used (``GEMINI_API_KEY_1..4`` first, base
-    key last — same chain the vision pipeline fails over through), and
-    SDK auto-retries are **disabled** (``HttpRetryOptions(attempts=0)``):
-    a 429 must degrade to the retrieval fallback, never hammer the daily
-    quota inside a hidden backoff loop. Values are never logged/returned.
-    """
-    settings = get_settings()
-    chain = settings.gemini_api_keys
-    if not chain:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "gemini_not_configured",
-                "message": (
-                    "No Gemini API key is configured. Add your free key from "
-                    "https://aistudio.google.com/apikey to .env (GEMINI_API_KEY or "
-                    "GEMINI_API_KEY_1) and restart the server."
-                ),
-            }
-        )
-    from google import genai  # imported lazily: optional at runtime
-    from google.genai import types
-
-    return genai.Client(
-        api_key=chain[0],
-        # One HTTP attempt — SDK retries (429/5XX backoff) switched off.
-        http_options=types.HttpOptions(
-            retry_options=types.HttpRetryOptions(attempts=0)
-        ),
-    )
-
-
-def _chunk_text(chunk: Any) -> str:
-    """Safely extract text from a Gemini chunk (may be empty / blocked)."""
-    try:
-        return chunk.text or ""
-    except Exception:  # noqa: BLE001 - blocked or empty candidates raise here
-        return ""
-
-
-async def stream_answer(
-    *,
-    question: str,
-    docs: Sequence[KnowledgeBase],
-    crop_context: dict[str, Any] | None,
-    history: Sequence[dict[str, str]],
-    lang: str,
-    temperature: float | None = None,
-    mode_out: dict[str, str] | None = None,
-) -> AsyncIterator[str]:
-    """Yield the answer token-by-token from Gemini (free tier).
-
-    Never raises for LLM problems: when the key is missing, the SDK fails,
-    the stream times out or comes back empty, this degrades to a
-    retrieval-only answer and records ``mode_out["mode"] =
-    "retrieval_fallback"`` so callers can report the real mode — the
-    chatbot must always answer, and must never wait without a deadline.
-    """
-    settings = get_settings()
-    prompt = build_prompt(
-        question=question,
-        docs=docs,
-        crop_context=crop_context,
-        history=history,
-        lang=lang,
-    )
-
-    def _degrade(reason: str) -> None:
-        if mode_out is not None:
-            mode_out["mode"] = "retrieval_fallback"
-            mode_out["reason"] = reason
-
-    if not settings.gemini_configured:
-        logger.warning("GEMINI_API_KEY missing — serving retrieval-only fallback answers")
-        _degrade("not_configured")
-        async for piece in _stream_fallback(docs, lang, reason="not_configured"):
-            yield piece
-        return
-
-    try:
-        client = _configure_genai()
-        from google.genai import types
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 - SDK import/config failure
-        logger.error("Gemini SDK configuration failed: %s", exc)
-        _degrade("sdk_error")
-        async for piece in _stream_fallback(docs, lang, reason="failed"):
-            yield piece
-        return
-
-    generation_config = types.GenerateContentConfig(
-        temperature=(
-            temperature if temperature is not None else settings.GEMINI_TEMPERATURE
-        ),
-        max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
-        top_p=0.95,
-        # Free-tier gemini-3.8-flash otherwise spends the whole token budget
-        # reasoning, leaving nothing for the visible answer.
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-    )
-
-    # Every await below carries a deadline: free-tier first-byte latency
-    # regularly runs 60-120s, and a hung call must never take the endpoint
-    # down with it (GEMINI_TIMEOUT_SECONDS is the total budget).
-    budget = float(settings.GEMINI_TIMEOUT_SECONDS)
-    deadline = asyncio.get_running_loop().time() + budget
-
-    produced = 0
-    try:
-        stream = await asyncio.wait_for(
-            client.aio.models.generate_content_stream(
-                model=settings.GEMINI_MODEL_NAME,
-                contents=prompt,
-                config=generation_config,
-            ),
-            timeout=budget,
-        )
-        while True:
-            remaining = max(deadline - asyncio.get_running_loop().time(), 0.05)
-            chunk = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
-            text = _chunk_text(chunk)
-            if text:
-                produced += len(text)
-                yield text
-    except StopAsyncIteration:
-        pass
-    except asyncio.TimeoutError:
-        if produced:
-            logger.warning(
-                "Gemini stream hit its %.0fs budget after %d chars — returning the partial answer",
-                budget,
-                produced,
-            )
-            return
-        logger.warning(
-            "Gemini produced nothing within %.0fs (free-tier latency) — retrieval fallback",
-            budget,
-        )
-        _degrade("timeout")
-        async for piece in _stream_fallback(docs, lang, reason="timeout"):
-            yield piece
-        return
-    except Exception as exc:  # noqa: BLE001 - network / quota / safety errors
-        if produced:
-            logger.error("Gemini streaming failed after %d chars: %s", produced, exc)
-            return  # keep whatever was already streamed to the client
-        logger.error("Gemini streaming failed: %s", exc)
-        _degrade("failed")
-        async for piece in _stream_fallback(docs, lang, reason="failed"):
-            yield piece
-        return
-
-    if produced == 0:
-        logger.warning("Gemini returned an empty stream — retrieval fallback")
-        _degrade("empty")
-        async for piece in _stream_fallback(docs, lang, reason="empty"):
-            yield piece
-
-
-async def _stream_fallback(
-    docs: Sequence[KnowledgeBase], lang: str, *, reason: str = "not_configured"
-) -> AsyncIterator[str]:
-    """Retrieval-only answer used whenever Gemini cannot answer right now."""
-    if lang == "ar":
-        intros = {
-            "not_configured": "لم يتم ضبط مفتاح Gemini بعد، وهذه أقرب المعلومات من قاعدة المعرفة:",
-            "timeout": "يستغرق الرد التفاعل وقتاً أطول من المتوقع الآن، وهذه أقرب المعلومات من قاعدة المعرفة:",
-            "failed": "تعذّر الوصول إلى النموذج التفاعلي الآن، وهذه أقرب المعلومات من قاعدة المعرفة:",
-            "empty": "لم يُرجع النموذج إجابة هذه المرة، وهذه أقرب المعلومات من قاعدة المعرفة:",
-        }
-        outros = {
-            "not_configured": "\n\n(أضف GEMINI_API_KEY إلى ملف .env لتفعيل الإجابات التفاعلية الكاملة.)",
-            "timeout": "\n\n(أعد المحاولة بعد قليل للحصول على إجابة تفاعلية كاملة.)",
-            "failed": "\n\n(أعد المحاولة بعد قليل للحصول على إجابة تفاعلية كاملة.)",
-            "empty": "\n\n(أعد صياغة السؤال أو أعد المحاولة.)",
-        }
-        intro = intros.get(reason, intros["failed"])
-        outro = outros.get(reason, outros["failed"])
-    else:
-        intros = {
-            "not_configured": "Gemini is not configured yet — here is the closest knowledge-base guidance:",
-            "timeout": "The AI answer is taking longer than expected right now — here is the closest knowledge-base guidance:",
-            "failed": "The AI model is unreachable right now — here is the closest knowledge-base guidance:",
-            "empty": "The model returned no answer this time — here is the closest knowledge-base guidance:",
-        }
-        outros = {
-            "not_configured": "\n\n(Add GEMINI_API_KEY to .env to enable the full conversational answers.)",
-            "timeout": "\n\n(Retry shortly for a full conversational answer.)",
-            "failed": "\n\n(Retry shortly for a full conversational answer.)",
-            "empty": "\n\n(Retry with a rephrased question.)",
-        }
-        intro = intros.get(reason, intros["failed"])
-        outro = outros.get(reason, outros["failed"])
-    yield intro + "\n\n"
-    for card in citation_cards(docs):
-        yield f"[{card['index']}] {card['title']}: {card['snippet']}\n"
-    yield outro
-
-
-async def answer_once(
-    *,
-    question: str,
-    docs: Sequence[KnowledgeBase],
-    crop_context: dict[str, Any] | None,
-    history: Sequence[dict[str, str]],
-    lang: str,
-    temperature: float | None = None,
-    mode_out: dict[str, str] | None = None,
-) -> str:
-    """Non-streaming helper (used by /chatbot/ask and by tests)."""
-    parts: list[str] = []
-    try:
-        async for piece in stream_answer(
-            question=question,
-            docs=docs,
-            crop_context=crop_context,
-            history=history,
-            lang=lang,
-            temperature=temperature,
-            mode_out=mode_out,
-        ):
-            parts.append(piece)
-    except HTTPException:
-        if parts:  # keep whatever was already generated
-            return "".join(parts)
-        raise
-    return "".join(parts)
 
 
 # ======================================================================

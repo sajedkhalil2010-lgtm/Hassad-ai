@@ -1,5 +1,6 @@
-"""AI service adapters (Gemini vision + Gemini RAG over the local KB)."""
+"""AI service adapters (local KB + image quality gate). The Gemini-facing
+logic moved to the v2 multi-agent framework in ``app.agents``."""
 
-from app.services.rag_service import seed_knowledge_base
+from app.agents.knowledge import seed_knowledge_base
 
 __all__ = ["seed_knowledge_base"]

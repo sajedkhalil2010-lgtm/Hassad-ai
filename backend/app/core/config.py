@@ -174,13 +174,13 @@ class Settings(BaseSettings):
     # available to new users"); Google now directs callers to gemini-3.8-flash.
     GEMINI_MODEL_NAME: str = "gemini-3.8-flash"
     # Free-tier first-byte latency regularly runs 60-120s, so this is the
-    # TOTAL streamed-generation budget: rag_service enforces it as a hard
+    # TOTAL streamed-generation budget: the AdvisorAgent enforces it as a
     # deadline and degrades to a retrieval-only answer when it expires.
     GEMINI_TIMEOUT_SECONDS: float = Field(default=180.0, ge=5.0, le=300.0)
     GEMINI_MAX_OUTPUT_TOKENS: int = Field(default=1024, ge=64, le=8192)
     GEMINI_TEMPERATURE: float = Field(default=0.3, ge=0.0, le=2.0)
     # ------------------------------------------------------------------
-    # AI — Gemini multimodal VISION (Crop Doctor / disease_detector)
+    # AI — Gemini multimodal VISION (Crop Doctor / DiagnosticAgent)
     # One live shot per stage with a generous deadline: Google's free
     # tier commonly needs 20-45s under load, so early cutoffs produced
     # honest-but-useless 503s. No fallback verdict exists — only the

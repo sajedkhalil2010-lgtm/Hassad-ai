@@ -39,7 +39,8 @@ from app.core.database import (
 )
 from app.core.security import hash_password
 from app.models.user import User, UserRole
-from app.services.rag_service import seed_knowledge_base
+from app.agents import KeyPoolManager
+from app.agents.knowledge import seed_knowledge_base
 
 logger = logging.getLogger("hassad")
 
@@ -318,8 +319,11 @@ def create_app() -> FastAPI:
                 "huggingface_key_configured": settings.huggingface_configured,
                 "gemini_key_configured": settings.gemini_configured,
                 "gemini_keys_configured": len(settings.gemini_api_keys),  # count, not material
+                "key_pool_size": KeyPoolManager.size(),  # v2 rotating pool (count only)
+                "pipeline": "supervisor_v2",  # multi-agent architecture
+                "agents": ["diagnostic", "advisor", "supervisor"],
                 "vision_engine": "gemini" if settings.gemini_configured else "unconfigured",
-                "vision_live_only": True,  # no mock verdicts — failures answer 503
+                "vision_live_only": True,  # no mock verdicts — failures answer 429/503
                 "vision_model": settings.vision_model_name,
                 "vision_timeout_s": settings.VISION_TIMEOUT_SECONDS,
                 "gemini_model": settings.GEMINI_MODEL_NAME,

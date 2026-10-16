@@ -34,17 +34,21 @@ from app.schemas.diagnosis import (
     ChatSessionOut,
     CitationCard,
 )
-from app.services.rag_service import (
-    answer_once,
+from app.agents import AdvisorAgent
+from app.agents.knowledge import (
     build_crop_context,
     citation_cards,
     detect_language,
     load_knowledge_base,
     retrieve,
-    stream_answer,
 )
 
 logger = logging.getLogger("hassad.api.chatbot")
+
+#: Process-wide advisor agent (stateless): streams RAG-grounded answers
+#: through the KeyPoolManager — multi-key rotation on 429, zero SDK
+#: retries, hard total deadline, retrieval fallback when no key answers.
+_advisor = AdvisorAgent()
 
 router = APIRouter(prefix="/chatbot", tags=["Chatbot"])
 
@@ -311,7 +315,7 @@ async def send_message(
         mode = "gemini" if settings.gemini_configured else "retrieval_fallback"
         state: dict[str, str] = {"mode": mode}
         try:
-            async for piece in stream_answer(
+            async for piece in _advisor.stream_advice(
                 question=payload.content,
                 docs=retrieved_docs,
                 crop_context=context,
@@ -398,7 +402,7 @@ async def ask(payload: ChatAskRequest, db: DbSession, user: CurrentUser) -> Chat
     lang = detect_language(payload.question, payload.lang)
 
     state: dict[str, str] = {"mode": "gemini" if settings.gemini_configured else "retrieval_fallback"}
-    answer = await answer_once(
+    answer = await _advisor.answer_once(
         question=payload.question,
         docs=retrieved_docs,
         crop_context=context,
