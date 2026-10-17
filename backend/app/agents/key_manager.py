@@ -1,40 +1,39 @@
-"""KeyPoolManager — smart multi-key management for every Gemini call.
+"""KeyPoolManager — smart multi-key state for every model interaction.
 
-V2 moved *all* key handling into this single component, used by both the
-DiagnosticAgent (vision) and the AdvisorAgent (text/streaming):
+v3 split: this module is **pure key policy** — it holds no SDK imports and
+makes no requests itself. It answers exactly three questions for the
+CognitionEngine (``app.agents.cognition``, the *only* module that talks to
+the google-genai SDK):
+
+* *Which key is next, and is it still allowed to be used?*
+* *This key just answered 429 — how long should it sit out?*
+* *Is the whole pool spent yet?*
+
+Policy carried over from v1/v2 hardening (all preserved):
 
 * **Pool** — ``GEMINI_API_KEY_1..4`` first (operator's primary + backups
   in ``.env``), base ``GEMINI_API_KEY`` last; deduplicated; each field
   honours env-var > .env > default via pydantic-settings. Values are
   secrets: never logged, never repr'd, never returned to any client —
   ``/health`` sees only :meth:`KeyPoolManager.size`.
-* **Rotation on 429** — a quota answer fails over to the next key.
-  Only quota triggers rotation; any other failure raises immediately
-  (one honest failure — never a blind retry loop).
+* **Rotation on 429** — a quota answer fails over to the next key
+  (decided here, executed by the cognition gateway). Only quota rotates;
+  any other failure surfaces immediately — never a blind retry loop.
 * **Quota memo** — a spent key is skipped until Google's own reset
   window (parsed from the 429 payload) elapses; when the whole pool is
-  spent, calls fail **instantly with zero network requests**, so
-  background traffic cannot keep burning quota.
-* **Zero SDK retries** — every client is built with
-  ``HttpRetryOptions(attempts=0)``; the google-genai default retries
-  429/5XX up to 4× with backoff, which is exactly what we forbid.
-
-Every failure surfaces as :class:`~app.agents.base.AgentFailure` with
-``kind="quota"|"busy"`` so routers can answer 429/503 honestly.
+  spent, the gateway fails **instantly with zero network requests**.
+* **Zero SDK retries** — enforced where clients are built: only the
+  cognition gateway constructs clients, always with
+  ``HttpRetryOptions(attempts=0)``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
-from typing import Any
 
-from pydantic import BaseModel
-
-from app.agents.base import AgentFailure, failure_kind, parse_json_response
+from app.agents.base import AgentFailure, failure_kind
 from app.core.config import get_settings
 
 logger = logging.getLogger("hassad.agents.keys")
@@ -63,19 +62,8 @@ def quota_wait_seconds(exc: Exception) -> int | None:
     return None
 
 
-def _mark_exhausted(position: int, exc: Exception) -> None:
-    wait = min(quota_wait_seconds(exc) or 600, 24 * 3600)
-    _KEY_BLOCKED_UNTIL[position] = time.monotonic() + wait
-    # Position + window only — never any key material.
-    logger.warning("key-pool #%d quota-limited — skipping for ~%ds", position + 1, wait)
-
-
-def _available(position: int) -> bool:
-    return time.monotonic() >= _KEY_BLOCKED_UNTIL.get(position, 0.0)
-
-
 class KeyPoolManager:
-    """Rotating pool of Gemini keys with quota awareness (process-wide)."""
+    """Key-state policy for the rotating Gemini pool (process-wide)."""
 
     # -- pool ---------------------------------------------------------
     @staticmethod
@@ -96,174 +84,44 @@ class KeyPoolManager:
     def all_exhausted() -> bool:
         """True when every pool position is memoised-blocked."""
         pool = get_settings().gemini_api_keys
-        return bool(pool) and not any(_available(i) for i in range(len(pool)))
-
-    # -- clients ------------------------------------------------------
-    @staticmethod
-    def _client(key: str) -> Any:
-        """Build a zero-retry client for one key (SDK auto-retries off)."""
-        from google import genai
-        from google.genai import types
-
-        return genai.Client(
-            api_key=key,
-            http_options=types.HttpOptions(
-                retry_options=types.HttpRetryOptions(attempts=0)
-            ),
+        return bool(pool) and not any(
+            available(i) for i in range(len(pool))
         )
 
+    # -- rotation state ------------------------------------------------
     @staticmethod
-    def _raise_as_failure(exc: Exception, *, agent: str) -> AgentFailure:
+    def available_positions() -> list[tuple[int, str]]:
+        """``(position, key)`` pairs still allowed to be used, in order.
+
+        Memoised-exhausted keys are skipped so the gateway never issues
+        a request Google will only reject again (zero wasted quota).
+        """
+        return [
+            (position, key)
+            for position, key in enumerate(get_settings().gemini_api_keys)
+            if available(position)
+        ]
+
+    @staticmethod
+    def mark_exhausted(position: int, exc: Exception) -> None:
+        """Memoise a 429 for one pool position (Google's own window)."""
+        wait = min(quota_wait_seconds(exc) or 600, 24 * 3600)
+        _KEY_BLOCKED_UNTIL[position] = time.monotonic() + wait
+        # Position + window only — never any key material.
+        logger.warning(
+            "key-pool #%d quota-limited — skipping for ~%ds", position + 1, wait
+        )
+
+    # -- failure contract ----------------------------------------------
+    @staticmethod
+    def raise_as_failure(exc: Exception, *, agent: str) -> AgentFailure:
+        """Classify an upstream error into the agent failure contract."""
         kind = failure_kind(exc)
-        raise AgentFailure(f"{agent} model call failed: {exc}", kind=kind, agent=agent) from exc
-
-    # -- structured generation (vision / JSON tasks) -------------------
-    @classmethod
-    async def generate_json(
-        cls,
-        *,
-        model: str,
-        contents: Any,
-        config: Any,
-        timeout: float,
-        agent: str,
-    ) -> dict[str, Any]:
-        """One bounded, schema-validated generation with 429 key rotation.
-
-        Exactly **one** HTTP attempt per key; a quota answer rotates to
-        the next key and memoises this one; other failures raise
-        immediately. A fully-spent pool raises instantly (zero network).
-        """
-        pool = cls.pool()
-        if not pool:
-            raise AgentFailure(
-                "no Gemini API key configured", kind="busy", agent=agent
-            )
-
-        last_quota: Exception | None = None
-        for position, key in enumerate(pool):
-            if not _available(position):
-                continue  # memoised exhausted key — no wasted request
-            client = cls._client(key)
-            try:
-                response = await asyncio.wait_for(
-                    client.aio.models.generate_content(
-                        model=model, contents=contents, config=config
-                    ),
-                    timeout=timeout,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — classified, never looped
-                if failure_kind(exc) == "quota":
-                    _mark_exhausted(position, exc)
-                    last_quota = exc
-                    continue  # → next key in the pool (the rotation)
-                cls._raise_as_failure(exc, agent=agent)
-            try:
-                return parse_json_response(response)
-            except Exception as exc:  # noqa: BLE001 - malformed payload
-                cls._raise_as_failure(exc, agent=agent)
-        # Whole pool spent (429s or memoised): instant, zero-network.
-        if last_quota is not None:
-            cls._raise_as_failure(last_quota, agent=agent)
         raise AgentFailure(
-            "all keys in the pool are quota-blocked (zero network calls made)",
-            kind="quota",
-            agent=agent,
-        )
-
-    # -- streaming generation (chat / advice) --------------------------
-    @classmethod
-    async def stream_text(
-        cls,
-        *,
-        model: str,
-        contents: str,
-        config: Any,
-        budget: float,
-        agent: str,
-    ) -> AsyncIterator[str]:
-        """Streamed generation with a hard deadline and 429 rotation.
-
-        Yields chunks; raises :class:`AgentFailure` when *no* key could
-        start a stream. Once text is flowing, a mid-stream failure just
-        ends the iteration (the caller keeps what was produced).
-        """
-        pool = cls.pool()
-        if not pool:
-            raise AgentFailure("no Gemini API key configured", kind="busy", agent=agent)
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + budget
-        last_quota: Exception | None = None
-
-        for position, key in enumerate(pool):
-            if not _available(position):
-                continue
-            client = cls._client(key)
-            produced: AsyncIterator[str] | None = None
-            try:
-                stream = await asyncio.wait_for(
-                    client.aio.models.generate_content_stream(
-                        model=model, contents=contents, config=config
-                    ),
-                    timeout=budget,
-                )
-                produced = stream
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — classified, never looped
-                if failure_kind(exc) == "quota":
-                    _mark_exhausted(position, exc)
-                    last_quota = exc
-                    continue  # → next key in the pool
-                cls._raise_as_failure(exc, agent=agent)
-
-            # Stream opened — pump chunks under the shared deadline.
-            sent = 0
-            while produced is not None:
-                remaining = max(deadline - loop.time(), 0.05)
-                try:
-                    chunk = await asyncio.wait_for(produced.__anext__(), timeout=remaining)
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
-                    if sent:
-                        return  # keep what already reached the client
-                    cls._raise_as_failure(
-                        TimeoutError(f"{agent} stream empty after {budget:.0f}s"),
-                        agent=agent,
-                    )
-                except Exception as exc:  # noqa: BLE001 - mid-stream failure
-                    if sent:
-                        return  # caller keeps the partial answer
-                    if failure_kind(exc) == "quota":
-                        _mark_exhausted(position, exc)
-                        last_quota = exc
-                        produced = None
-                        break  # → next key in the pool
-                    cls._raise_as_failure(exc, agent=agent)
-                text = _chunk_text(chunk)
-                if text:
-                    sent += len(text)
-                    yield text
-            if sent:
-                return
-            # nothing produced on this key → fall through to rotation
-
-        if last_quota is not None:
-            cls._raise_as_failure(last_quota, agent=agent)
-        raise AgentFailure(
-            "all keys in the pool are quota-blocked (zero network calls made)",
-            kind="quota",
-            agent=agent,
-        )
+            f"{agent} model call failed: {exc}", kind=kind, agent=agent
+        ) from exc
 
 
-def _chunk_text(chunk: Any) -> str:
-    """Safely extract text from a streamed chunk (may be empty/blocked)."""
-    try:
-        return chunk.text or ""
-    except Exception:  # noqa: BLE001 - blocked or empty candidates raise here
-        return ""
+def available(position: int) -> bool:
+    """Is pool position #position past its memoised quota window?"""
+    return time.monotonic() >= _KEY_BLOCKED_UNTIL.get(position, 0.0)

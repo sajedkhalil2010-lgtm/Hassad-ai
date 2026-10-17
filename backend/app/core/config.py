@@ -149,6 +149,13 @@ class Settings(BaseSettings):
     DISEASE_CONFIRM_THRESHOLD: float = Field(default=0.75, ge=0.0, le=1.0)
     DISEASE_REVIEW_THRESHOLD: float = Field(default=0.50, ge=0.0, le=1.0)
 
+    # Agentic autonomy (v3): DiagnosticAgent self-verification protocol.
+    # When enabled it spends ONE cheap text pass checking its own verdict
+    # for internal consistency (and may launch at most ONE bounded
+    # re-analysis). Set to false to run single-shot (fewer requests/day).
+    AGENT_SELF_CHECK: bool = True
+    AGENT_DIAGNOSTIC_BUDGET_SECONDS: float = Field(default=90.0, ge=15.0, le=180.0)
+
     # Image validation (quality + privacy)
     IMAGE_MAX_BYTES: int = Field(default=8 * 1024 * 1024, ge=16 * 1024, le=64 * 1024 * 1024)
     IMAGE_MIN_BYTES: int = Field(default=1024, ge=128)

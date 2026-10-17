@@ -1,25 +1,39 @@
-"""DiagnosticAgent — deep visual pathology on uploaded crop images.
+"""DiagnosticAgent — autonomous visual pathology on uploaded crop images.
 
-The v2 successor of the retired linear ``disease_detector`` service: same
-proven single-shot mechanics, re-expressed as an autonomous agent.
+v3: the agent no longer fires a linear "prompt → call → response"
+wrapper. It runs a **reasoning protocol it decides by itself**:
 
-* **Model** — ``settings.vision_model_name`` (``gemini-3.8-flash``) via
-  :class:`~app.agents.key_manager.KeyPoolManager` (multi-key rotation on
-  429, quota memo, zero SDK retries).
-* **Rigorous JSON schema** — ``response_schema`` +
-  ``response_mime_type="application/json"`` forces every verdict into the
-  exact shape below: crop candidates, disease **or nutrient-deficiency**
-  name (AR+EN), calibrated confidence, visible symptoms, immediate
-  actions, cultural and chemical treatments, monitoring, prevention and
-  differential alternatives. Nothing is ever fabricated — a failed call
-  raises ``AgentFailure``.
-* **One bounded shot per stage** — ``VISION_TIMEOUT_SECONDS`` (45 s).
-  No retries, no loops.
-* **English-first output** — content fields are English; the bilingual
-  contract field ``name_ar`` is still produced for the Arabic UI.
-* **Optimized payloads** — photos ≤ 256 KB pass through byte-for-byte;
-  larger ones are resized to ≤ 1024 px and quality-stepped to fit a
-  ~380 KB ceiling (≤ 3 bounded encodes), encoded off the event loop.
+1. **Hypothesize** — ONE structured vision pass (schema-enforced)
+   produces the initial verdict: crop candidates (stage 1) and the
+   disease/deficiency diagnosis with calibrated confidence, AR+EN names,
+   symptoms, immediate actions, cultural/chemical treatments,
+   monitoring, prevention and differential alternatives.
+2. **Self-verify** (when ``AGENT_SELF_CHECK`` and confidence is inside
+   the verification band) — a cheap text-only critique pass examines the
+   verdict's *internal consistency* (does the summary match the named
+   condition for this crop? are the symptoms coherent? are the
+   treatments agronomically sensible?). Unavailable verification is
+   tolerated (trace records it) — verification never blocks a live
+   verdict.
+3. **Refine — at most ONE bounded re-analysis** — if the critique
+   finds inconsistency and confidence is still plausible, the agent
+   re-examines the photo with the critique's issues injected into the
+   prompt. A failed refine keeps the original (real) verdict; a
+   consistent critique may nudge confidence within [0, 1].
+
+Every step is written to the shared blackboard (``ctx.trace``) so the
+supervisor can ship the full reasoning trail. All model access goes
+through :class:`~app.agents.cognition.CognitionEngine` — this module
+imports no SDK.
+
+Hard bounds: ``AGENT_DIAGNOSTIC_BUDGET_SECONDS`` (90 s) covers ALL
+passes combined; per-pass timeouts never undercut the shared budget;
+zero retries; no mock fallback — failures raise ``AgentFailure``.
+
+English-first output: content fields are English; the bilingual contract
+field ``name_ar`` is still produced for the Arabic UI. Payloads are
+optimized before transmission (≤256 KB passthrough; else ≤1024 px +
+quality-stepped to ~380 KB), encoded off the event loop.
 """
 
 from __future__ import annotations
@@ -27,7 +41,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import time
 from typing import Any
 
 from PIL import Image
@@ -40,7 +53,7 @@ from app.agents.base import (
     clamp01,
     str_list,
 )
-from app.agents.key_manager import KeyPoolManager
+from app.agents.cognition import CognitionEngine
 from app.core.config import get_settings
 
 logger = logging.getLogger("hassad.agents.diagnostic")
@@ -48,13 +61,21 @@ logger = logging.getLogger("hassad.agents.diagnostic")
 #: Uploads at or below this size are already optimal → forwarded verbatim.
 _RAW_PASSTHROUGH_MAX = 262_144
 
-#: Optimization targets: no photo sent to Gemini exceeds these.
+#: Optimization targets: no photo sent to the model exceeds these.
 _OPT_MAX_SIDE = 1024
 _OPT_MAX_BYTES = 380_000
 
+#: Self-verification band: below → the retake policy will fire anyway
+#: (don't waste a request), above → confidence is decisive (don't waste
+#: a request either). Everything in between gets critiqued.
+_VERIFY_BAND = (0.35, 0.92)
+
+#: The agent may re-analyze at most this many times (bounded refine).
+_MAX_REFINES = 1
+
 
 # ======================================================================
-# Rigorous JSON schema enforced on the model's response
+# Rigorous JSON schema enforced on the model's responses
 # ======================================================================
 class _CropRow(BaseModel):
     id: str
@@ -79,7 +100,7 @@ class _Alternative(BaseModel):
 
 
 class _VisionPayload(BaseModel):
-    """The exact shape ``gemini-3.8-flash`` must return (response_schema)."""
+    """The exact shape the vision model must return (response_schema)."""
 
     candidates: list[_CropRow]
     disease: _DiseaseName
@@ -107,6 +128,14 @@ class _DiseasePayload(BaseModel):
     alternatives: list[_Alternative]
 
 
+class _CritiquePayload(BaseModel):
+    """The self-verification verdict the agent turns on itself."""
+
+    consistent: bool
+    issues: list[str]
+    confidence_adjustment: float
+
+
 # ======================================================================
 # Image preparation
 # ======================================================================
@@ -115,7 +144,7 @@ def optimize_image(
     raw_bytes: bytes | None,
     raw_mime: str | None,
 ) -> tuple[bytes, str]:
-    """Shrink the upload so Gemini never waits on payload size.
+    """Shrink the upload so the model never waits on payload size.
 
     * Already-small photos (≤ 256 KB) are forwarded **byte-for-byte**.
     * Anything larger is resized to ≤ 1024 px per side and encoded as an
@@ -153,7 +182,7 @@ def optimize_image(
 # Prompts — live in-depth analysis (English-first, bilingual names)
 # ======================================================================
 def _full_prompt() -> str:
-    """One shot: crop identification + deep pathology (disease/deficiency)."""
+    """Hypothesis pass: crop identification + deep pathology, one shot."""
     vocab = ", ".join(f"{cid}={en}" for cid, en, _ar in CROP_VOCAB)
     return (
         "You are an expert crop classifier and plant pathologist inside "
@@ -188,6 +217,39 @@ def _disease_prompt(crop_label: str, crop_id: str | None) -> str:
         "symptom colour, shape and distribution. If the leaf is genuinely "
         "healthy use name_en 'Healthy Leaf' and name_ar 'ورقة سليمة' with "
         "confidence >= 0.90."
+    )
+
+
+def _verify_prompt(analysis: dict[str, Any], crop_label: str | None) -> str:
+    """Text-only self-critique of the agent's own verdict."""
+    return (
+        "You are the self-verification layer of an agricultural diagnosis "
+        "agent. Critique this verdict for internal consistency — decide "
+        "ONLY from what is written:\n"
+        f"- crop: {crop_label or 'unspecified'}\n"
+        f"- diagnosis: {analysis.get('name_en')} / {analysis.get('name_ar')} "
+        f"(confidence {analysis.get('confidence')})\n"
+        f"- summary: {analysis.get('summary')}\n"
+        f"- symptoms: {analysis.get('symptoms')}\n"
+        f"- treatments: {analysis.get('cultural_treatments')} + "
+        f"{analysis.get('chemical_treatments')}\n"
+        "Questions: is the summary plausible for this named condition on "
+        "this crop? do the listed symptoms cohere with it? are the "
+        "treatments agronomically coherent for it (no contradiction, no "
+        "product mismatched to the pathogen class)? Set consistent=false "
+        "and list each specific issue when anything contradicts. "
+        "confidence_adjustment: a small signed correction in [-0.2, 0.2] "
+        "(0.0 when nothing is wrong)."
+    )
+
+
+def _refine_prompt(base: str, issues: list[str]) -> str:
+    """Re-analysis instruction carrying the critique's issues."""
+    return (
+        f"{base}\nA prior analysis of this same photo was internally "
+        "inconsistent: " + "; ".join(issues[:6]) + ". Re-examine the photo "
+        "carefully — verify every symptom you cite is actually visible "
+        "before naming the condition."
     )
 
 
@@ -266,57 +328,45 @@ def _coerce_disease(payload: dict[str, Any]) -> dict[str, Any]:
 # The agent
 # ======================================================================
 class DiagnosticAgent:
-    """Autonomous vision pathology stage (``gemini-3.8-flash``)."""
+    """Autonomous vision pathology agent (hypothesize → verify → refine)."""
 
     name = "diagnostic"
 
     async def analyze_full(self, ctx: AgentContext) -> dict[str, Any]:
-        """ONE live shot for the whole diagnosis (crop + disease/deficiency).
+        """Full protocol: crop candidates + deep verdict in one run.
 
         Returns ``{"candidates": [...], name_ar, name_en, confidence,
-        summary, symptoms, ... , "engine": "gemini", "latency_ms": int}``.
+        summary, ... , "engine": "gemini", "latency_ms": int}``.
         Raises :class:`AgentFailure` — there is no mock fallback.
         """
-        settings = get_settings()
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        try:
-            analysis = _coerce_full(
-                await KeyPoolManager.generate_json(
-                    model=settings.vision_model_name,
-                    contents=await self._contents(ctx, _full_prompt()),
-                    config=self._config(max_tokens=2048),
-                    timeout=settings.VISION_TIMEOUT_SECONDS,
-                    agent=self.name,
-                )
-            )
-        except AgentFailure:
-            raise
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - honest failure, no fabrication
-            raise AgentFailure(
-                f"diagnostic full stage failed: {exc}", kind="busy", agent=self.name
-            ) from exc
-        analysis["engine"] = "gemini"
-        analysis["latency_ms"] = int((loop.time() - started) * 1000)
-        return analysis
+        return await self._run(ctx, full=True)
 
     async def analyze_disease(self, ctx: AgentContext) -> dict[str, Any]:
-        """Deep live pathology after the farmer confirmed the crop."""
+        """Full protocol after the farmer confirmed the crop (deep shot)."""
+        return await self._run(ctx, full=False)
+
+    # -- the reasoning protocol -----------------------------------------
+    async def _run(self, ctx: AgentContext, *, full: bool) -> dict[str, Any]:
         settings = get_settings()
+        trace = ctx.trace
         loop = asyncio.get_running_loop()
-        started = loop.time()
-        crop_label = ctx.crop_label or ""
+        run_started = loop.time()
+        budget = float(ctx.budget_s or settings.AGENT_DIAGNOSTIC_BUDGET_SECONDS)
+        base_prompt = _full_prompt() if full else _disease_prompt(
+            ctx.crop_label or "", ctx.crop_id
+        )
+        coerce = _coerce_full if full else _coerce_disease
+        schema = _VisionPayload if full else _DiseasePayload
+
+        # Stage 1 — hypothesis: ONE structured vision pass.
+        t0 = loop.time()
         try:
-            analysis = _coerce_disease(
-                await KeyPoolManager.generate_json(
+            analysis = coerce(
+                await CognitionEngine.structured_json(
                     model=settings.vision_model_name,
-                    contents=await self._contents(
-                        ctx, _disease_prompt(crop_label, ctx.crop_id)
-                    ),
-                    config=self._config(max_tokens=1024),
-                    timeout=settings.VISION_TIMEOUT_SECONDS,
+                    contents=await self._contents(ctx, base_prompt),
+                    config=self._config(schema, max_tokens=2048 if full else 1024),
+                    timeout=max(min(budget, settings.VISION_TIMEOUT_SECONDS), 10.0),
                     agent=self.name,
                 )
             )
@@ -326,40 +376,187 @@ class DiagnosticAgent:
             raise
         except Exception as exc:  # noqa: BLE001 - honest failure, no fabrication
             raise AgentFailure(
-                f"diagnostic disease stage failed: {exc}", kind="busy", agent=self.name
+                f"diagnostic hypothesis failed: {exc}", kind="busy", agent=self.name
             ) from exc
+        trace.record(
+            self.name,
+            "hypothesis",
+            "structured vision pass",
+            "verdict",
+            ms=int((loop.time() - t0) * 1000),
+            confidence=analysis["confidence"],
+            diagnosis=analysis["name_en"],
+        )
+
+        # Stage 2 — self-verification (optional per config/band).
+        if not settings.AGENT_SELF_CHECK:
+            trace.record(self.name, "self_verify", "config disabled", "skipped")
+        elif not (_VERIFY_BAND[0] <= analysis["confidence"] <= _VERIFY_BAND[1]):
+            trace.record(
+                self.name,
+                "self_verify",
+                f"confidence {analysis['confidence']:.2f} outside band",
+                "skipped",
+            )
+        else:
+            analysis = await self._verify_and_maybe_refine(
+                ctx=ctx,
+                analysis=analysis,
+                base_prompt=base_prompt,
+                schema=schema,
+                coerce=coerce,
+                run_started=run_started,
+                budget=budget,
+            )
+
         analysis["engine"] = "gemini"
-        analysis["latency_ms"] = int((loop.time() - started) * 1000)
+        analysis["latency_ms"] = int((loop.time() - run_started) * 1000)
+        return analysis
+
+    async def _verify_and_maybe_refine(
+        self,
+        *,
+        ctx: AgentContext,
+        analysis: dict[str, Any],
+        base_prompt: str,
+        schema: type[BaseModel],
+        coerce: Any,
+        run_started: float,
+        budget: float,
+    ) -> dict[str, Any]:
+        """Critique the verdict; refine at most once. Never blocks."""
+        settings = get_settings()
+        trace = ctx.trace
+        loop = asyncio.get_running_loop()
+        elapsed = loop.time() - run_started
+        remaining = budget - elapsed
+
+        # Text-only critique of the verdict already in hand.
+        t0 = loop.time()
+        try:
+            critique = await CognitionEngine.structured_json(
+                model=settings.GEMINI_MODEL_NAME,
+                contents=_verify_prompt(analysis, ctx.crop_label),
+                config=self._config(_CritiquePayload, max_tokens=768),
+                timeout=max(min(remaining, 30.0), 8.0),
+                agent=self.name,
+            )
+        except AgentFailure as exc:
+            # Verification is best-effort: an unavailable self-check must
+            # never destroy a real, live verdict (robust recovery).
+            trace.record(
+                self.name,
+                "self_verify",
+                "critique own verdict",
+                "unavailable",
+                ms=int((loop.time() - t0) * 1000),
+                reason=exc.kind,
+            )
+            return analysis
+        except Exception as exc:  # noqa: BLE001 - malformed critique etc.
+            trace.record(
+                self.name,
+                "self_verify",
+                "critique own verdict",
+                "unavailable",
+                ms=int((loop.time() - t0) * 1000),
+                reason="parse_error",
+                detail=str(exc)[:120],
+            )
+            return analysis
+
+        consistent = bool(critique.get("consistent", True))
+        issues = [
+            s for s in (critique.get("issues") or []) if isinstance(s, str)
+        ][:6]
+        try:
+            adjustment = float(critique.get("confidence_adjustment") or 0.0)
+        except (TypeError, ValueError):
+            adjustment = 0.0
+        adjustment = max(-0.2, min(0.2, adjustment))
+        trace.record(
+            self.name,
+            "self_verify",
+            "critique own verdict",
+            "consistent" if consistent else "inconsistent",
+            ms=int((loop.time() - t0) * 1000),
+            issues=len(issues),
+        )
+
+        # Stage 3 — bounded refine: at most ONE re-analysis.
+        if not consistent and analysis["confidence"] >= 0.45 and _MAX_REFINES >= 1:
+            t0 = loop.time()
+            try:
+                refined = coerce(
+                    await CognitionEngine.structured_json(
+                        model=settings.vision_model_name,
+                        contents=await self._contents(
+                            ctx, _refine_prompt(base_prompt, issues)
+                        ),
+                        config=self._config(schema, max_tokens=2048),
+                        timeout=max(budget - (loop.time() - run_started), 8.0),
+                        agent=self.name,
+                    )
+                )
+                trace.record(
+                    self.name,
+                    "refine",
+                    "re-examine photo with critique issues",
+                    "refined",
+                    ms=int((loop.time() - t0) * 1000),
+                    confidence=refined["confidence"],
+                    diagnosis=refined["name_en"],
+                )
+                return refined
+            except AgentFailure as exc:
+                # Keep the original real verdict — refinement is optional.
+                trace.record(
+                    self.name,
+                    "refine",
+                    "re-examine photo with critique issues",
+                    "kept_original",
+                    ms=int((loop.time() - t0) * 1000),
+                    reason=exc.kind,
+                )
+                return analysis
+            except Exception as exc:  # noqa: BLE001 - malformed refinement
+                trace.record(
+                    self.name,
+                    "refine",
+                    "re-examine photo with critique issues",
+                    "kept_original",
+                    ms=int((loop.time() - t0) * 1000),
+                    reason="parse_error",
+                    detail=str(exc)[:120],
+                )
+                return analysis
+
+        if consistent and abs(adjustment) >= 0.01:
+            analysis["confidence"] = clamp01(analysis["confidence"] + adjustment)
+            trace.record(
+                self.name,
+                "confidence",
+                "apply self-check adjustment",
+                "adjusted",
+                delta=round(adjustment, 3),
+                confidence=analysis["confidence"],
+            )
         return analysis
 
     # -- internals ----------------------------------------------------
     @staticmethod
-    def _config(*, max_tokens: int) -> Any:
-        from google.genai import types
-
-        return types.GenerateContentConfig(
-            temperature=0.15,
-            max_output_tokens=max_tokens,
-            # Rigorous JSON schema: the model MUST answer in this exact shape.
-            response_mime_type="application/json",
-            response_schema=(
-                _VisionPayload if max_tokens >= 2048 else _DiseasePayload
-            ),
-            # Free-tier flash otherwise spends its budget reasoning silently.
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        )
+    def _config(schema: type[BaseModel], *, max_tokens: int) -> Any:
+        return CognitionEngine.config(schema, temperature=0.15, max_tokens=max_tokens)
 
     @staticmethod
     async def _contents(ctx: AgentContext, prompt: str) -> list[Any]:
         """[prompt, optimised image part] — encoding off the event loop."""
-        from google.genai import types
-
         if ctx.image is None:
             raise AgentFailure("no image in agent context", agent="diagnostic")
 
         def _part() -> Any:
             data, mime = optimize_image(ctx.image, ctx.raw_bytes, ctx.raw_mime)
-            return types.Part.from_bytes(data=data, mime_type=mime)
+            return CognitionEngine.image_part(data, mime)
 
         return [prompt, await asyncio.to_thread(_part)]
 

@@ -10,11 +10,16 @@ Takes a DiagnosticAgent verdict and formulates the expert advisory layer:
   disease name and confidence always come from the diagnosis — the KB
   never invents a verdict.
 * :meth:`AdvisorAgent.stream_advice` / :meth:`answer_once` — the chat
-  assistant: RAG-grounded, streamed through the KeyPoolManager (multi-key
-  rotation on 429, zero SDK retries, hard total deadline). The chatbot
-  **must always answer**: when no key can start a stream, the agent
-  degrades to a retrieval-only answer and reports
+  assistant: RAG-grounded, streamed through the CognitionEngine
+  gateway (multi-key rotation on 429, zero SDK retries, hard total
+  deadline). The chatbot **must always answer**: when no key can start
+  a stream, the agent degrades to a retrieval-only answer and reports
   ``mode="retrieval_fallback"`` — it never dead-ends.
+
+v3: the agent holds no SDK code — all reasoning goes through
+:mod:`app.agents.cognition`; plan synthesis is grounded (diagnosis
+fields first, knowledge-base enrichment second, bilingual disclaimer
+always) and is validated non-empty before it ships.
 
 English-first formatting (bilingual ``LocalizedText`` rows preserved);
 chat answers honour the caller's ``lang``.
@@ -28,6 +33,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from app.agents.base import AgentFailure
+from app.agents.cognition import CognitionEngine
 from app.agents.key_manager import KeyPoolManager
 from app.agents import knowledge
 from app.core.config import get_settings
@@ -139,18 +145,15 @@ class AdvisorAgent:
             return
 
         try:
-            from google.genai import types
-
-            config = types.GenerateContentConfig(
-                temperature=temperature if temperature is not None else settings.GEMINI_TEMPERATURE,
-                max_output_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
+            config = CognitionEngine.config(
+                temperature=(
+                    temperature if temperature is not None else settings.GEMINI_TEMPERATURE
+                ),
+                max_tokens=settings.GEMINI_MAX_OUTPUT_TOKENS,
                 top_p=0.95,
-                # Free-tier flash otherwise spends its whole token budget
-                # reasoning, leaving nothing for the visible answer.
-                thinking_config=types.ThinkingConfig(thinking_budget=0),
             )
             produced = 0
-            async for piece in KeyPoolManager.stream_text(
+            async for piece in CognitionEngine.stream_text(
                 model=settings.GEMINI_MODEL_NAME,
                 contents=prompt,
                 config=config,

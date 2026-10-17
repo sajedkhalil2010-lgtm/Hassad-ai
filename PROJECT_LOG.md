@@ -1,12 +1,12 @@
-# حَصاد AI — Hassad AI v2 · Project Log & Architecture Record
+# حَصاد AI — Hassad AI v2/v3 · Project Log & Architecture Record
 
 > Living document: every architectural decision, agent file, and step of the
-> v2 multi-agent refactor is recorded here for presentation and audit.
+> agentic refactor is recorded here for presentation and audit.
 > Newest entries at the bottom of the Progress Log.
 
 ---
 
-## 1. What changed in v2 (architectural reset)
+## 1. What changed (architectural reset)
 
 **v1 (retired):** raw, *linear* Gemini API calls — one procedural service
 (`disease_detector.py`) fired single shots, and the router contained the
@@ -16,20 +16,41 @@ pipeline logic inline.
 Supervision, key management, and failure recovery are first-class objects;
 routers only handle HTTP + persistence.
 
+**v3 — pure agentic autonomy (zero raw APIs):** *no module outside the
+infrastructure layer touches a model SDK, and no agent fires a "prompt →
+call → response" wrapper anymore.* Three upgrades on top of v2:
+
+1. **Single cognition gateway** — `agents/cognition.py` (`CognitionEngine`)
+   is the *only* file that imports `google.genai`. Agents ask the engine
+   for *reasoning*, never for HTTP.
+2. **Autonomous reasoning protocols** — DiagnosticAgent runs
+   *hypothesize → self-verify → (bounded) refine*; AdvisorAgent grounds
+   and validates its plan before shipping it; neither executes
+   pre-written linear glue — each decides its next step from the state
+   of its own reasoning.
+3. **Supervisor coordination loop** — the SupervisorAgent no longer
+   walks a straight line: it holds a blackboard (`RunTrace`), dispatches
+   stages from a policy table, evaluates each agent's result, and decides
+   the next dispatch (continue / ask-crop / retake / review / degrade).
+   The whole coordination trace ships in `model_meta.trace` as
+   auditable proof of autonomy.
+
 ```
 Client (untouched RTL Arabic SPA)
-   │  multipart /crop-doctor/diagnose  (identical wire contract)
    ▼
-FastAPI router (app/api/v1/crop_doctor.py)  — auth, validation, DB only
+FastAPI router — HTTP + persistence only (no AI code at all)
    ▼
-SupervisorAgent (agents/supervisor_agent.py)  — orchestration & fallbacks
-   ├─► DiagnosticAgent (agents/diagnostic_agent.py)
-   │      Gemini vision · schema-enforced JSON · image optimiser
-   ├─► AdvisorAgent (agents/advisor_agent.py)
-   │      localized treatment plans · KB grounding · chat streaming
-   └─► KeyPoolManager (agents/key_manager.py)
-          multi-key rotation on HTTP 429 · quota memo · zero SDK retries
+SupervisorAgent — coordination loop over a policy table + blackboard
+   │   dispatch → evaluate → next dispatch (trace recorded)
+   ├─► DiagnosticAgent  — hypothesize → self-verify → bounded refine
+   ├─► AdvisorAgent     — grounded plan synthesis + chat reasoning
+   ▼
+CognitionEngine (agents/cognition.py)   ← ONLY module importing google-genai
+   ▼
+KeyPoolManager (agents/key_manager.py)  ← key state: rotation on 429,
+                                           quota memo, zero SDK retries
 ```
+
 
 ## 2. The three agents
 
@@ -113,3 +134,10 @@ by the agent framework.
 | 10 | 2026-10-16 | **Router rewires**: `crop_doctor.py` is now a thin HTTP/persistence layer over `SupervisorAgent` (English-first 429 `vision_quota` / 503 `vision_busy` details); `chatbot.py` streams through `_advisor = AdvisorAgent()`; `/health` exposes `pipeline: supervisor_v2`, `agents: [diagnostic, advisor, supervisor]`, `key_pool_size` (count only). |
 | 11 | 2026-10-16 | **Validation** — offline agent suite **15/15** (fake clients, zero quota: pool rotation A→B, memo, zero-retry clients, diagnostic coercion, supervisor confirmed+plan report, selected-crop deep shot, chat streaming + fallback, whole-pent-pool instant quota failure with `new_calls=0`); all modules compile; server boots with v2 health block; **E2E 36/36** (auth, chat SSE live stream through the advisor, diagnose honest 429, quality gate, sync, agronomist); `git status frontend/` empty — frontend untouched. |
 | 12 | 2026-10-16 | v2 committed and pushed to `main` (`.env` still ignored/untracked — verified `git ls-files`: only the clean `.env.example`). |
+| 13 | 2026-10-17 | **v3 — pure agentic autonomy (zero raw APIs)** decision recorded above: one cognition gateway, autonomous reasoning protocols, supervisor coordination loop over a blackboard. |
+| 14 | 2026-10-17 | `agents/key_manager.py` rewritten as **pure key-state policy** (pool, `available_positions()`, `mark_exhausted()`, quota memo — no SDK imports). New **`agents/cognition.py`** — the single module importing `google.genai`: `structured_json` (bounded, schema-enforced, 429 rotation) + `stream_text` (hard deadline) + `config()`/`image_part()` builders so not even configs are assembled outside the gateway; zero SDK retries enforced at client construction. |
+| 15 | 2026-10-17 | `agents/base.py` gains **`RunTrace`** (shared blackboard: agent/step/action/outcome/ms) + `AgentContext.budget_s` (agent-wide reasoning budget). `config.py` gains `AGENT_SELF_CHECK` (default on) + `AGENT_DIAGNOSTIC_BUDGET_SECONDS` (90 s covering all diagnostic passes). |
+| 16 | 2026-10-17 | **DiagnosticAgent → autonomous protocol**: hypothesis (one structured vision pass) → **self-verify** (text-only critique of its own verdict, inside a confidence band) → **bounded refine** (max ONE re-analysis carrying the critique's issues; critique/refine failures keep the original live verdict — robust recovery, trace-recorded). **AdvisorAgent** streams/plans through the gateway only (no SDK imports left anywhere else). |
+| 17 | 2026-10-17 | **SupervisorAgent → coordination loop**: builds the stage plan from inputs (`auto` vs `user-crop`), dispatches stage by stage, evaluates each result against the threshold policy, decides continuation/early-exit, and ships the full trail as `model_meta.trace`. Pipeline id `supervisor_v3`; `/health` adds `autonomy: "agentic"`. Wire-contract parity preserved: `vision{crop,disease,model,latency_ms}`, `alternatives` only on stage-2, `disease: null` on awaiting reports, `source: "model"`. |
+| 18 | 2026-10-17 | **Validation** — offline v3 suite **21/21** (zero-SDK invariant scan proving `google.genai` lives only in `cognition.py`; pool rotation A→429→B; memo; self-verify trace; bounded refine wins; critique-failure recovery; awaiting early-report with null disease; chat streaming + retrieval fallback; spent-pool instant quota failure with `new_calls=0`); **15/15 compile**; **E2E 42/42 LIVE** — quota reset overnight so both uploads got real, distinct Gemini verdicts (`Septoria Leaf Spot` 0.85 via the two-stage flow, `Early Blight` 0.85 on the alt upload), live SSE chat streams, 45 s budget honored (33.2 s), quality gate/sync/agronomist/auth intact; `git status frontend/` empty (frontend untouched); server log clean. |
+| 19 | 2026-10-17 | v3 committed and pushed to `main` (`.env` exclusion re-verified before commit: only the clean `.env.example` staged/ignored). |

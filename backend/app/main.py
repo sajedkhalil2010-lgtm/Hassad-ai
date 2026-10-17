@@ -320,7 +320,8 @@ def create_app() -> FastAPI:
                 "gemini_key_configured": settings.gemini_configured,
                 "gemini_keys_configured": len(settings.gemini_api_keys),  # count, not material
                 "key_pool_size": KeyPoolManager.size(),  # v2 rotating pool (count only)
-                "pipeline": "supervisor_v2",  # multi-agent architecture
+                "pipeline": "supervisor_v3",  # pure agentic autonomy (zero raw APIs)
+                "autonomy": "agentic",  # hypothesis→self-verify→refine + coordination loop
                 "agents": ["diagnostic", "advisor", "supervisor"],
                 "vision_engine": "gemini" if settings.gemini_configured else "unconfigured",
                 "vision_live_only": True,  # no mock verdicts — failures answer 429/503
