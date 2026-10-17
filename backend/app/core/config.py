@@ -1,17 +1,22 @@
 """Central configuration for the Hassad AI backend.
 
+v4 — 100% local autonomy: the diagnosis pipeline runs entirely on
+OpenCV + NumPy inside this process. **No external AI API exists in the
+runtime** (no Gemini, no Hugging Face), hence no API keys, no rate
+limits and no 429s. An old ``.env`` that still carries key templates is
+ignored (``extra="ignore"``).
+
 Security rules enforced here
 ----------------------------
-1. **No secret is ever hard-coded.**  Every credential (``SECRET_KEY``,
-   ``HUGGINGFACE_API_KEY``, ``GEMINI_API_KEY`` …) is read at *runtime* from the
-   process environment or from the git-ignored ``.env`` file located next to the
-   project root, using ``pydantic-settings``.
+1. **No secret is ever hard-coded.**  Every credential (``SECRET_KEY`` …)
+   is read at *runtime* from the process environment or from the
+   git-ignored ``.env`` file located next to the project root, using
+   ``pydantic-settings``.
 2. **Strict validation.**  Fields are range-checked / format-checked, an
-   explicitly provided weak ``SECRET_KEY`` aborts startup, and a missing secret
-   degrades gracefully (the feature returns ``503`` with an actionable message
-   instead of crashing or silently using a fake key).
-3. **Relative SQLite paths are anchored to the project root**, so the API behaves
-   the same regardless of the working directory it is launched from.
+   explicitly provided weak ``SECRET_KEY`` aborts startup.
+3. **Relative SQLite paths are anchored to the project root**, so the API
+   behaves the same regardless of the working directory it is launched
+   from.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ _PLACEHOLDER_SECRETS = {
     "xxx",
 }
 
-# Template wording used in the shipped .env (e.g. "put_your_gemini_key_here").
+# Template wording that may still appear in a stale .env.
 _PLACEHOLDER_PREFIXES = (
     "put_your_",
     "your_",
@@ -60,10 +65,9 @@ _PLACEHOLDER_SUFFIXES = ("_here", "-here")
 def _is_placeholder(value: str) -> bool:
     """True for empty/template values that must never be used as real credentials.
 
-    A freshly copied ``.env`` therefore boots safely: the server starts, logs one
-    warning, and the affected feature reports *unconfigured* (503 / fallback)
-    instead of sending a fake key upstream.  Real tokens (``hf_...``, ``AIza...``)
-    never match these patterns.
+    A freshly copied ``.env`` therefore boots safely: the server starts,
+    logs one warning, and the affected feature reports *unconfigured*
+    instead of ever using a fake key.
     """
     candidate = (value or "").strip().lower()
     if candidate in _PLACEHOLDER_SECRETS:
@@ -133,28 +137,25 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = Field(default=10, ge=0, le=100)
 
     # ------------------------------------------------------------------
-    # AI — Hugging Face free inference (Crop Doctor)
+    # Two-stage pipeline thresholds (decision policy)
     # ------------------------------------------------------------------
-    HUGGINGFACE_API_KEY: str = Field(default="", repr=False)
-    HF_API_BASE_URL: str = "https://router.huggingface.co/hf-inference"
-    HF_API_FALLBACK_URLS: str = "https://api-inference.huggingface.co"
-    HF_CROP_MODEL_ID: str = "google/vit-base-patch16-224"
-    HF_DISEASE_MODEL_ID: str = "microsoft/resnet-50"
-    HF_TIMEOUT_SECONDS: float = Field(default=45.0, ge=5.0, le=300.0)
-    HF_MAX_RETRIES: int = Field(default=3, ge=0, le=6)
-    HF_RETRY_BACKOFF_SECONDS: float = Field(default=2.0, ge=0.5, le=30.0)
-
-    # Two-stage pipeline thresholds
     CROP_AUTO_THRESHOLD: float = Field(default=0.80, ge=0.0, le=1.0)
     DISEASE_CONFIRM_THRESHOLD: float = Field(default=0.75, ge=0.0, le=1.0)
     DISEASE_REVIEW_THRESHOLD: float = Field(default=0.50, ge=0.0, le=1.0)
 
-    # Agentic autonomy (v3): DiagnosticAgent self-verification protocol.
-    # When enabled it spends ONE cheap text pass checking its own verdict
-    # for internal consistency (and may launch at most ONE bounded
-    # re-analysis). Set to false to run single-shot (fewer requests/day).
-    AGENT_SELF_CHECK: bool = True
-    AGENT_DIAGNOSTIC_BUDGET_SECONDS: float = Field(default=90.0, ge=15.0, le=180.0)
+    # Agentic budget: wall-clock ceiling the supervisor grants one full
+    # diagnostic run (local vision + matching + plan). Sub-second in
+    # practice; kept as a safety net for the coordination loop.
+    AGENT_DIAGNOSTIC_BUDGET_SECONDS: float = Field(default=30.0, ge=5.0, le=120.0)
+
+    # ------------------------------------------------------------------
+    # Local quantitative vision engine (OpenCV + NumPy)
+    # ------------------------------------------------------------------
+    #: longest image side processed by the segmentation engine
+    CV_MAX_SIDE: int = Field(default=960, ge=320, le=4096)
+    #: severity categorisation thresholds on affected_area_percentage
+    SEVERITY_EARLY_MAX_PCT: float = Field(default=5.0, ge=0.0, le=100.0)
+    SEVERITY_MODERATE_MAX_PCT: float = Field(default=15.0, ge=0.0, le=100.0)
 
     # Image validation (quality + privacy)
     IMAGE_MAX_BYTES: int = Field(default=8 * 1024 * 1024, ge=16 * 1024, le=64 * 1024 * 1024)
@@ -166,38 +167,8 @@ class Settings(BaseSettings):
     IMAGE_STORAGE_DIR: str = "uploads"
 
     # ------------------------------------------------------------------
-    # AI — Google Gemini free tier (RAG chatbot)
+    # AI — local RAG chatbot (retrieval over the local knowledge base)
     # ------------------------------------------------------------------
-    GEMINI_API_KEY: str = Field(default="", repr=False)
-    # Optional backup keys: automatic failover when one key hits the
-    # free-tier daily 429 quota (20 req/day per model per key/project).
-    # Chain order tried: GEMINI_API_KEY_1..4 first, base key last.
-    # Secrets: never logged, never repr'd, never returned by any endpoint.
-    GEMINI_API_KEY_1: str = Field(default="", repr=False)
-    GEMINI_API_KEY_2: str = Field(default="", repr=False)
-    GEMINI_API_KEY_3: str = Field(default="", repr=False)
-    GEMINI_API_KEY_4: str = Field(default="", repr=False)
-    # gemini-2.5-flash was retired for new API keys (404 "no longer
-    # available to new users"); Google now directs callers to gemini-3.8-flash.
-    GEMINI_MODEL_NAME: str = "gemini-3.8-flash"
-    # Free-tier first-byte latency regularly runs 60-120s, so this is the
-    # TOTAL streamed-generation budget: the AdvisorAgent enforces it as a
-    # deadline and degrades to a retrieval-only answer when it expires.
-    GEMINI_TIMEOUT_SECONDS: float = Field(default=180.0, ge=5.0, le=300.0)
-    GEMINI_MAX_OUTPUT_TOKENS: int = Field(default=1024, ge=64, le=8192)
-    GEMINI_TEMPERATURE: float = Field(default=0.3, ge=0.0, le=2.0)
-    # ------------------------------------------------------------------
-    # AI — Gemini multimodal VISION (Crop Doctor / DiagnosticAgent)
-    # One live shot per stage with a generous deadline: Google's free
-    # tier commonly needs 20-45s under load, so early cutoffs produced
-    # honest-but-useless 503s. No fallback verdict exists — only the
-    # deadline is long. UI shows a staged loading state meanwhile.
-    # ------------------------------------------------------------------
-    # Live Gemini attempt budget (tunable 10-60s via .env). Default 45s
-    # so a healthy answer is never cut off prematurely; exceeding it →
-    # structured 503 (vision_busy) with retry guidance.
-    VISION_TIMEOUT_SECONDS: float = Field(default=45.0, ge=10.0, le=60.0)
-    VISION_MODEL_NAME: str = ""  # empty → GEMINI_MODEL_NAME
     RAG_TOP_K: int = Field(default=4, ge=1, le=10)
     CHAT_HISTORY_MAX_MESSAGES: int = Field(default=12, ge=0, le=50)
     CHAT_MAX_INPUT_CHARS: int = Field(default=4000, ge=50, le=32_000)
@@ -229,29 +200,6 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_secret(cls, value: str) -> str:
         return (value or "").strip()
-
-    @field_validator(
-        "HUGGINGFACE_API_KEY",
-        "GEMINI_API_KEY",
-        "GEMINI_API_KEY_1",
-        "GEMINI_API_KEY_2",
-        "GEMINI_API_KEY_3",
-        "GEMINI_API_KEY_4",
-        mode="after",
-    )
-    @classmethod
-    def _normalise_api_keys(cls, value: str) -> str:
-        """Template placeholders count as 'not configured' (never sent upstream)."""
-        cleaned = (value or "").strip()
-        return "" if _is_placeholder(cleaned) else cleaned
-
-    @field_validator("HF_API_BASE_URL", mode="after")
-    @classmethod
-    def _validate_hf_base(cls, value: str) -> str:
-        value = (value or "").strip().rstrip("/")
-        if not value.startswith(("http://", "https://")):
-            raise ValueError("HF_API_BASE_URL must be an http(s) URL")
-        return value
 
     @field_validator("DATABASE_URL", mode="after")
     @classmethod
@@ -299,8 +247,11 @@ class Settings(BaseSettings):
             )
         if not (0.0 <= self.CROP_AUTO_THRESHOLD <= 1.0):
             raise ValueError("CROP_AUTO_THRESHOLD must be between 0 and 1")
-        if not (0.0 <= self.GEMINI_TEMPERATURE <= 2.0):
-            raise ValueError("GEMINI_TEMPERATURE must be between 0 and 2")
+        if not (0.0 < self.SEVERITY_EARLY_MAX_PCT < self.SEVERITY_MODERATE_MAX_PCT <= 100.0):
+            raise ValueError(
+                "Severity thresholds must satisfy 0 < SEVERITY_EARLY_MAX_PCT "
+                "< SEVERITY_MODERATE_MAX_PCT <= 100"
+            )
         return self
 
     # ==================================================================
@@ -318,52 +269,6 @@ class Settings(BaseSettings):
         if not self.ALLOWED_HOSTS:
             return ["*"]
         return [host.strip() for host in self.ALLOWED_HOSTS.split(",") if host.strip()]
-
-    @property
-    def hf_fallback_urls(self) -> list[str]:
-        if not self.HF_API_FALLBACK_URLS:
-            return []
-        return [
-            url.strip().rstrip("/")
-            for url in self.HF_API_FALLBACK_URLS.split(",")
-            if url.strip().rstrip("/")
-        ]
-
-    @property
-    def huggingface_configured(self) -> bool:
-        """True when a Hugging Face token is available (value never exposed)."""
-        return bool(self.HUGGINGFACE_API_KEY)
-
-    @property
-    def gemini_api_keys(self) -> list[str]:
-        """Ordered failover chain for live Gemini calls (deduplicated).
-
-        Numbered backups first (``GEMINI_API_KEY_1..4`` — the primary key
-        the operator configures), then the base ``GEMINI_API_KEY`` as the
-        last resort. Only the *count* is ever exposed (health endpoint);
-        values never leave the process.
-        """
-        chain: list[str] = []
-        for key in (
-            self.GEMINI_API_KEY_1,
-            self.GEMINI_API_KEY_2,
-            self.GEMINI_API_KEY_3,
-            self.GEMINI_API_KEY_4,
-            self.GEMINI_API_KEY,
-        ):
-            if key and key not in chain:
-                chain.append(key)
-        return chain
-
-    @property
-    def gemini_configured(self) -> bool:
-        """True when any Gemini API key is available (values never exposed)."""
-        return bool(self.gemini_api_keys)
-
-    @property
-    def vision_model_name(self) -> str:
-        """Model used by the multimodal vision pipeline (crop + disease)."""
-        return self.VISION_MODEL_NAME or self.GEMINI_MODEL_NAME
 
     @property
     def is_production(self) -> bool:

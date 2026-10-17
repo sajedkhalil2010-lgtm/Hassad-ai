@@ -1,30 +1,29 @@
-"""Crop Doctor — thin HTTP layer over the v2 multi-agent pipeline.
+"""Crop Doctor — thin HTTP layer over the local multi-agent pipeline.
 
 The workflow itself lives in the agents
 (``app.agents.supervisor_agent``): the :class:`SupervisorAgent`
-coordinates the DiagnosticAgent (visual pathology) and the AdvisorAgent
-(treatment plan) and returns one unified JSON report. This router only
-handles what routers should: uploads, validation, ownership, persistence
-and the public ``DiagnosisResponse`` the (untouched) frontend consumes.
+coordinates the DiagnosticAgent (local OpenCV/NumPy pathology) and the
+AdvisorAgent (Tébessa-localized treatment plan) and returns one unified
+JSON report. This router only handles what routers should: uploads,
+validation, ownership, persistence and the public ``DiagnosisResponse``
+the (untouched) frontend consumes.
 
 Decision policy (applied by the supervisor):
 
-* confidence >= ``CROP_AUTO_THRESHOLD`` (0.80) → deep diagnosis continues
-  automatically; below it → top-3 candidates are returned so the farmer
-  can pick (``awaiting_crop_selection``).
+* crop confidence < ``CROP_AUTO_THRESHOLD`` (0.80) → top-3 candidates
+  are returned so the farmer can pick (``awaiting_crop_selection``);
+  the local engine never guesses crop species above the threshold.
 * disease confidence >= ``DISEASE_CONFIRM_THRESHOLD`` (0.75) → confirmed
   diagnosis + localized treatment plan.
 * confidence in [``DISEASE_REVIEW_THRESHOLD``, 0.75) → agronomist review
   queue (``in_review``).
 * below it → the farmer is asked to retake the photo.
 
-**Live-only contract** — no mock/simulated verdict exists. When the
-model cannot answer, agents raise ``AgentFailure`` and this endpoint
-answers with a structured, *user-friendly* error: **429**
-(``code: vision_quota``) when the daily free-tier allowance is spent
-(after automatic rotation through every key in the pool), **503**
-(``code: vision_busy``) for congestion/timeouts — English-first
-messages, never freezing the UI.
+**Honest contract** — no mock/simulated verdict exists; every verdict
+is measured from the photo's pixels. When the local pipeline cannot
+deliver (unreadable image, segmentation impossible), agents raise
+``AgentFailure`` and this endpoint answers with a structured 503
+(``code: vision_busy``) — never freezing the UI.
 
 Every run persists ``crop_id``, ``crop_confidence``, ``crop_source``,
 ``disease_id`` and ``disease_confidence`` on the ``diagnoses`` table.
@@ -42,7 +41,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, sta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents import AgentContext, AgentFailure, KeyPoolManager, SupervisorAgent
+from app.agents import AgentContext, AgentFailure, SupervisorAgent
 from app.agents.base import raw_mime_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.config import get_settings
@@ -69,45 +68,23 @@ router = APIRouter(prefix="/crop-doctor", tags=["Crop Doctor"])
 _STATUS_VALUES = {status_.value for status_ in DiagnosisStatus}
 
 # ======================================================================
-# Live-only honesty: when the model cannot answer inside its bounded
-# budget the agents raise AgentFailure (no mock exists) and we return a
-# structured, retryable HTTP error — 429 (quota, after key rotation) or
-# 503 (busy) — instead of fabricating a verdict or freezing the client.
+# Honest failure mapping: when the local pipeline cannot deliver inside
+# its bounded budget the agents raise AgentFailure (no mock exists) and
+# we return a structured HTTP 503 — instead of fabricating a verdict or
+# freezing the client.
 # ======================================================================
 _BUSY_DETAIL = {
     "code": "vision_busy",
     "retry": "busy",
     "message": (
-        "The vision model (Gemini 3.8 Flash) did not respond within its full "
-        "45-second budget. Nothing was saved. Please retry in a moment — "
-        "congestion is usually temporary."
-    ),
-}
-
-#: Daily free-tier allowance for the vision model ran out — Google answers
-#: 429 RESOURCE_EXHAUSTED with its own reset window. Mirrored to the
-#: client as HTTP 429 with code ``vision_quota``: instant, structured,
-#: zero network calls once the key pool knows every key is spent. Served
-#: only after ALL keys were rotated or were already memoised-blocked.
-_QUOTA_DETAIL = {
-    "code": "vision_quota",
-    "retry": "quota",
-    "message": (
-        "The free daily allowance for Gemini 3.8 Flash is exhausted "
-        "(20 requests/day per key/project) — every configured key was tried "
-        "automatically. Nothing was saved. The allowance resets later today "
-        "per Google's schedule; you can also add a backup key "
-        "(GEMINI_API_KEY_1) to .env for additional daily allowance."
+        "The local analysis engine hit an unexpected problem and could not "
+        "finish. Nothing was saved. Please retry in a moment."
     ),
 }
 
 
 def _busy(exc: AgentFailure) -> HTTPException:
     logger.warning("Agent failure (kind=%s, agent=%s): %s", exc.kind, exc.agent, exc)
-    if exc.kind == "quota":
-        return HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=_QUOTA_DETAIL
-        )
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_BUSY_DETAIL)
 
 
@@ -423,5 +400,6 @@ async def delete_diagnosis(diagnosis_id: str, db: DbSession, user: CurrentUser) 
     await db.commit()
 
 
-# The key pool is exposed for /health-style observability (count only).
-__all__ = ["router", "KeyPoolManager"]
+# Kept for import-compat with older tests/docs (no key pool exists in
+# the local stack — engine identity travels in model_meta).
+__all__ = ["router"]

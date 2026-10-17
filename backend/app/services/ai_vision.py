@@ -3,17 +3,16 @@
 Responsibilities
 ----------------
 1. **Image validation (Stage 0/1 gate)** — byte size, decodability, dimensions
-   and a blur check based on the variance of the Laplacian (implemented with
-   NumPy only, so there is no OpenCV system dependency).
-2. **Treatment plans** — deterministic bilingual (AR/EN) agronomy plans keyed on
-   the disease label, so a confirmed diagnosis always ships with actionable
-   guidance even when the vision model is offline. The live plan built from
-   the agent verdict lives in ``app.agents.advisor_agent``.
+   and a blur check based on the variance of the Laplacian (NumPy).
+2. **Template treatment plans** — deterministic bilingual (AR/EN) agronomy
+   plans keyed on the disease label, used by the agronomist template
+   generator. The live plan built from the agent verdict lives in
+   ``app.agents.advisor_agent`` (Tébessa KB).
 
 (No API calls live in this module — it is the local knowledge/quality
-layer. All Gemini traffic moved to the v2 multi-agent framework in
-``app.agents``: DiagnosticAgent (vision), AdvisorAgent (plans/chat),
-SupervisorAgent (orchestration), KeyPoolManager (key rotation).)
+layer. All AI reasoning lives in the v4 multi-agent framework in
+``app.agents``: DiagnosticAgent (OpenCV/NumPy vision), AdvisorAgent
+(plans/chat), SupervisorAgent (orchestration).)
 """
 
 from __future__ import annotations

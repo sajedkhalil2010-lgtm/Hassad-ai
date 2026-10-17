@@ -1,568 +1,421 @@
-"""DiagnosticAgent — autonomous visual pathology on uploaded crop images.
+"""DiagnosticAgent — fully autonomous LOCAL pathology analysis agent.
 
-v3: the agent no longer fires a linear "prompt → call → response"
-wrapper. It runs a **reasoning protocol it decides by itself**:
+100% local pipeline (no external APIs, no network, no rate limits):
 
-1. **Hypothesize** — ONE structured vision pass (schema-enforced)
-   produces the initial verdict: crop candidates (stage 1) and the
-   disease/deficiency diagnosis with calibrated confidence, AR+EN names,
-   symptoms, immediate actions, cultural/chemical treatments,
-   monitoring, prevention and differential alternatives.
-2. **Self-verify** (when ``AGENT_SELF_CHECK`` and confidence is inside
-   the verification band) — a cheap text-only critique pass examines the
-   verdict's *internal consistency* (does the summary match the named
-   condition for this crop? are the symptoms coherent? are the
-   treatments agronomically sensible?). Unavailable verification is
-   tolerated (trace records it) — verification never blocks a live
-   verdict.
-3. **Refine — at most ONE bounded re-analysis** — if the critique
-   finds inconsistency and confidence is still plausible, the agent
-   re-examines the photo with the critique's issues injected into the
-   prompt. A failed refine keeps the original (real) verdict; a
-   consistent critique may nudge confidence within [0, 1].
+1. **Quantitative vision** — ``local_vision.analyze_leaf`` segments the
+   leaf and its lesions with OpenCV + NumPy and returns measured metrics
+   (``affected_area_percentage``, ``segmentation_dice_score``, severity,
+   lesion geometry, colour-family fractions, halo index …).
+2. **Condition matching** — a deterministic rules engine compares the
+   measured feature vector against Tébessa-relevant condition profiles
+   (early blight, late blight, septoria, rust, powdery mildew, nutrient
+   deficiencies, healthy …) and produces scored candidates.
+3. **Confidence** — the reported confidence is a *real* number:
+   condition-fit score scaled by the segmentation consensus (Dice) and
+   the ambiguity margin. No fabrication, no mock verdicts.
 
-Every step is written to the shared blackboard (``ctx.trace``) so the
-supervisor can ship the full reasoning trail. All model access goes
-through :class:`~app.agents.cognition.CognitionEngine` — this module
-imports no SDK.
+The agent exposes the same two entry points the SupervisorAgent's
+coordination loop dispatches (``analyze_full`` for the auto path —
+candidates + verdict — and ``analyze_disease`` for the confirmed-crop
+deep pass). Every step is appended to the shared ``RunTrace``
+blackboard for observability.
 
-Hard bounds: ``AGENT_DIAGNOSTIC_BUDGET_SECONDS`` (90 s) covers ALL
-passes combined; per-pass timeouts never undercut the shared budget;
-zero retries; no mock fallback — failures raise ``AgentFailure``.
-
-English-first output: content fields are English; the bilingual contract
-field ``name_ar`` is still produced for the Arabic UI. Payloads are
-optimized before transmission (≤256 KB passthrough; else ≤1024 px +
-quality-stepped to ~380 KB), encoded off the event loop.
+English-first formatting: keys, statuses and messages are English;
+bilingual ``(en, ar)`` symptom rows travel with the verdict.
 """
 
 from __future__ import annotations
 
-import asyncio
-import io
 import logging
+import time
 from typing import Any
-
-from PIL import Image
-from pydantic import BaseModel
 
 from app.agents.base import (
     CROP_VOCAB,
     AgentContext,
     AgentFailure,
-    clamp01,
-    str_list,
+    RunTrace,
 )
-from app.agents.cognition import CognitionEngine
-from app.core.config import get_settings
+from app.agents.local_vision import VisionMetrics, analyze_leaf_async
 
 logger = logging.getLogger("hassad.agents.diagnostic")
 
-#: Uploads at or below this size are already optimal → forwarded verbatim.
-_RAW_PASSTHROUGH_MAX = 262_144
+_ENGINE = "local_cv"
+_PIPELINE_TAG = "opencv-numpy-local"
 
-#: Optimization targets: no photo sent to the model exceeds these.
-_OPT_MAX_SIDE = 1024
-_OPT_MAX_BYTES = 380_000
+_CROP_AR = {cid: ar for cid, _en, ar in CROP_VOCAB}
+_CROP_EN = {cid: en for cid, en, _ar in CROP_VOCAB}
 
-#: Self-verification band: below → the retake policy will fire anyway
-#: (don't waste a request), above → confidence is decisive (don't waste
-#: a request either). Everything in between gets critiqued.
-_VERIFY_BAND = (0.35, 0.92)
-
-#: The agent may re-analyze at most this many times (bounded refine).
-_MAX_REFINES = 1
-
-
-# ======================================================================
-# Rigorous JSON schema enforced on the model's responses
-# ======================================================================
-class _CropRow(BaseModel):
-    id: str
-    label: str
-    confidence: float
-
-
-class _DiseaseName(BaseModel):
-    name_ar: str
-    name_en: str
-    confidence: float
-
-
-class _ChemicalRow(BaseModel):
-    product: str
-    usage: str
-
-
-class _Alternative(BaseModel):
-    name_ar: str
-    confidence: float
-
-
-class _VisionPayload(BaseModel):
-    """The exact shape the vision model must return (response_schema)."""
-
-    candidates: list[_CropRow]
-    disease: _DiseaseName
-    summary: str
-    symptoms: list[str]
-    immediate_actions: list[str]
-    cultural_treatments: list[str]
-    chemical_treatments: list[_ChemicalRow]
-    monitoring: list[str]
-    prevention: list[str]
-    alternatives: list[_Alternative]
-
-
-class _DiseasePayload(BaseModel):
-    """Confirmed-crop variant: deep verdict without crop candidates."""
-
-    disease: _DiseaseName
-    summary: str
-    symptoms: list[str]
-    immediate_actions: list[str]
-    cultural_treatments: list[str]
-    chemical_treatments: list[_ChemicalRow]
-    monitoring: list[str]
-    prevention: list[str]
-    alternatives: list[_Alternative]
-
-
-class _CritiquePayload(BaseModel):
-    """The self-verification verdict the agent turns on itself."""
-
-    consistent: bool
-    issues: list[str]
-    confidence_adjustment: float
+# Regional prior (Tébessa belt) used only to seed the crop-selection
+# candidates when the farmer has not confirmed a crop yet. The local
+# engine cannot classify crop species from a leaf photo — the honest
+# answer is to ask, and these priors order the choices.
+REGIONAL_PRIOR: tuple[str, ...] = (
+    "wheat", "barley", "olive", "tomato", "potato", "grape", "date-palm", "maize",
+)
 
 
 # ======================================================================
-# Image preparation
+# Condition profiles — Tébessa-relevant disease / disorder heuristics
 # ======================================================================
-def optimize_image(
-    image: Image.Image,
-    raw_bytes: bytes | None,
-    raw_mime: str | None,
-) -> tuple[bytes, str]:
-    """Shrink the upload so the model never waits on payload size.
+def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, x))
 
-    * Already-small photos (≤ 256 KB) are forwarded **byte-for-byte**.
-    * Anything larger is resized to ≤ 1024 px per side and encoded as an
-      optimised JPEG, then quality-stepped (82 → 70 → 58) and, in the
-      extreme case, downscaled once more until it fits the ~380 KB byte
-      ceiling. The step list is fixed and bounded — at most three encodes.
 
-    Returns ``(bytes, mime_type)``.
+class ConditionProfile:
+    """A named scoring function over the measured VisionMetrics.
+
+    ``fit()`` returns 0..1: how well the observed features match the
+    condition's visual signature. ``crops`` restricts the profile
+    (None = any crop); a mismatch penalises but never zeroes the fit
+    (symptoms overlap across species).
     """
-    if raw_bytes and len(raw_bytes) <= _RAW_PASSTHROUGH_MAX and raw_mime:
-        return raw_bytes, raw_mime
 
-    probe = image.copy()
-    if probe.mode not in ("RGB", "L"):
-        probe = probe.convert("RGB")  # palettes/alpha cannot encode to JPEG
-    probe.thumbnail((_OPT_MAX_SIDE, _OPT_MAX_SIDE))
+    __slots__ = ("cond_id", "name_en", "name_ar", "crops", "fit", "summary_en")
 
-    def _encode(quality: int) -> bytes:
-        buf = io.BytesIO()
-        probe.save(buf, "JPEG", quality=quality, optimize=True)
-        return buf.getvalue()
-
-    data = _encode(82)
-    for quality in (70, 58):  # bounded: at most two extra encodes
-        if len(data) <= _OPT_MAX_BYTES:
-            break
-        data = _encode(quality)
-    if len(data) > _OPT_MAX_BYTES:  # extreme case: shrink once more
-        probe.thumbnail((_OPT_MAX_SIDE // 2, _OPT_MAX_SIDE // 2))
-        data = _encode(58)
-    return data, "image/jpeg"
+    def __init__(self, cond_id, name_en, name_ar, crops, fit, summary_en):
+        self.cond_id = cond_id
+        self.name_en = name_en
+        self.name_ar = name_ar
+        self.crops = crops  # tuple[str, ...] | None
+        self.fit = fit
+        self.summary_en = summary_en
 
 
-# ======================================================================
-# Prompts — live in-depth analysis (English-first, bilingual names)
-# ======================================================================
-def _full_prompt() -> str:
-    """Hypothesis pass: crop identification + deep pathology, one shot."""
-    vocab = ", ".join(f"{cid}={en}" for cid, en, _ar in CROP_VOCAB)
-    return (
-        "You are an expert crop classifier and plant pathologist inside "
-        "Hassad AI, a working agricultural app. Analyse this field photo "
-        "in depth — this is a REAL diagnosis from the visible symptoms, "
-        "never a simulation. Rules: choose crop candidates ONLY from this "
-        f"list ({vocab}) — top 3, ranked by confidence; name_en in English; "
-        "name_ar in clear MSA Arabic; detect disease OR nutrient "
-        "deficiency; confidence between 0.0 and 1.0; symptoms and "
-        "immediate_actions 3-6 items; alternatives at most 2 (or empty); "
-        "chemical_treatments: two effective fungicides/products suited to "
-        "Algerian conditions with dose/usage; all other fields in concise "
-        "practical English. In summary describe what you actually saw: "
-        "symptom colour, shape and distribution on the leaf. If the leaf "
-        "is genuinely healthy with no symptoms use name_en 'Healthy Leaf' "
-        "and name_ar 'ورقة سليمة' with confidence >= 0.90."
-    )
+def _fit_early_blight(m: VisionMetrics) -> float:
+    f = m.color_fractions
+    nec = f.get("necrotic", 0.0)
+    if nec <= 0.01:
+        return 0.0
+    lesion_total = max(sum(f.values()), 1e-6)
+    score = 0.30 + 0.40 * _clamp(nec / lesion_total) + 0.35 * _clamp(m.halo_index / 0.5)
+    if 3 <= m.lesion_count <= 80:
+        score += 0.10
+    return _clamp(score)
 
 
-def _disease_prompt(crop_label: str, crop_id: str | None) -> str:
-    host = f"{crop_label} ({crop_id})" if crop_id else crop_label
-    return (
-        "You are an expert plant pathologist inside Hassad AI, a working "
-        f"agricultural app. The photo belongs to this crop: {host}. "
-        "Give an in-depth REAL diagnosis from the visible symptoms — never "
-        "a simulation. Rules: name_en in English; name_ar in clear MSA "
-        "Arabic; detect disease OR nutrient deficiency; confidence 0.0-1.0; "
-        "symptoms and immediate_actions 3-6 items; alternatives at most 2 "
-        "(or empty); chemical_treatments: two effective products suited to "
-        "Algerian conditions with dose/usage; all other fields in concise "
-        "practical English. In summary describe what you actually saw: "
-        "symptom colour, shape and distribution. If the leaf is genuinely "
-        "healthy use name_en 'Healthy Leaf' and name_ar 'ورقة سليمة' with "
-        "confidence >= 0.90."
-    )
+def _fit_late_blight(m: VisionMetrics) -> float:
+    f = m.color_fractions
+    dark = f.get("water_soaked", 0.0)
+    nec = f.get("necrotic", 0.0)
+    if dark + nec <= 0.01:
+        return 0.0
+    lesion_total = max(sum(f.values()), 1e-6)
+    score = 0.25 + 0.45 * _clamp(dark / lesion_total) + 0.20 * _clamp(m.largest_lesion_share / 0.5)
+    if m.affected_area_percentage > 12:
+        score += 0.10
+    return _clamp(score)
 
 
-def _verify_prompt(analysis: dict[str, Any], crop_label: str | None) -> str:
-    """Text-only self-critique of the agent's own verdict."""
-    return (
-        "You are the self-verification layer of an agricultural diagnosis "
-        "agent. Critique this verdict for internal consistency — decide "
-        "ONLY from what is written:\n"
-        f"- crop: {crop_label or 'unspecified'}\n"
-        f"- diagnosis: {analysis.get('name_en')} / {analysis.get('name_ar')} "
-        f"(confidence {analysis.get('confidence')})\n"
-        f"- summary: {analysis.get('summary')}\n"
-        f"- symptoms: {analysis.get('symptoms')}\n"
-        f"- treatments: {analysis.get('cultural_treatments')} + "
-        f"{analysis.get('chemical_treatments')}\n"
-        "Questions: is the summary plausible for this named condition on "
-        "this crop? do the listed symptoms cohere with it? are the "
-        "treatments agronomically coherent for it (no contradiction, no "
-        "product mismatched to the pathogen class)? Set consistent=false "
-        "and list each specific issue when anything contradicts. "
-        "confidence_adjustment: a small signed correction in [-0.2, 0.2] "
-        "(0.0 when nothing is wrong)."
-    )
+def _fit_septoria(m: VisionMetrics) -> float:
+    f = m.color_fractions
+    nec = f.get("necrotic", 0.0)
+    if nec <= 0.01:
+        return 0.0
+    lesion_total = max(sum(f.values()), 1e-6)
+    score = 0.25 + 0.35 * _clamp(nec / lesion_total) + 0.15 * _clamp(m.halo_index / 0.4)
+    if m.lesion_count >= 12:
+        score += 0.20
+    if m.lesion_count >= 30:
+        score += 0.10
+    return _clamp(score)
 
 
-def _refine_prompt(base: str, issues: list[str]) -> str:
-    """Re-analysis instruction carrying the critique's issues."""
-    return (
-        f"{base}\nA prior analysis of this same photo was internally "
-        "inconsistent: " + "; ".join(issues[:6]) + ". Re-examine the photo "
-        "carefully — verify every symptom you cite is actually visible "
-        "before naming the condition."
-    )
+def _fit_rust(m: VisionMetrics) -> float:
+    f = m.color_fractions
+    rust = f.get("rust_ochre", 0.0)
+    if rust <= 0.005:
+        return 0.0
+    lesion_total = max(sum(f.values()), 1e-6)
+    score = 0.30 + 0.45 * _clamp(rust / lesion_total)
+    if m.lesion_count >= 10:
+        score += 0.15
+    return _clamp(score)
 
 
-# ======================================================================
-# Coercion — defensive clamps on top of the schema
-# ======================================================================
-def _coerce_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    import re
+def _fit_powdery(m: VisionMetrics) -> float:
+    powd = m.color_fractions.get("powdery", 0.0)
+    if powd <= 0.005:
+        return 0.0
+    return _clamp(0.35 + 0.50 * _clamp(powd / 0.10))
 
-    rows = payload.get("candidates")
-    if not isinstance(rows, list) or not rows:
-        raise ValueError("no candidates in vision response")
+
+def _fit_deficiency_n(m: VisionMetrics) -> float:
+    f = m.color_fractions
+    chl = f.get("chlorotic", 0.0)
+    nec = f.get("necrotic", 0.0)
+    if chl <= 0.02:
+        return 0.0
+    # generalized yellowing with little necrotic spotting → N hunger
+    return _clamp(0.30 + 0.40 * _clamp(chl / 0.15) - 0.35 * _clamp(nec / 0.05))
+
+
+def _fit_deficiency_k(m: VisionMetrics) -> float:
+    nec = m.color_fractions.get("necrotic", 0.0)
+    if nec <= 0.01 or m.border_necrosis_share <= 0.2:
+        return 0.0
+    return _clamp(0.30 + 0.45 * _clamp(m.border_necrosis_share / 0.8))
+
+
+def _fit_healthy(m: VisionMetrics) -> float:
+    if m.affected_area_percentage > 0.6:
+        return 0.0
+    return _clamp(0.60 + 0.40 * (1.0 - _clamp(m.affected_area_percentage / 0.6)))
+
+
+PROFILES: tuple[ConditionProfile, ...] = (
+    ConditionProfile(
+        "early_blight", "Early Blight", "اللفحة المبكرة",
+        ("tomato", "potato", "pepper", "eggplant"),
+        _fit_early_blight,
+        "Necrotic lesions with chlorotic halos (Alternaria-type pattern)",
+    ),
+    ConditionProfile(
+        "late_blight", "Late Blight", "اللفحة المتأخرة",
+        ("tomato", "potato"),
+        _fit_late_blight,
+        "Dark water-soaked coalescing lesions (oomycete blight pattern)",
+    ),
+    ConditionProfile(
+        "septoria_leaf_spot", "Septoria Leaf Spot", "اللفحة الدائرية",
+        ("tomato", "wheat"),
+        _fit_septoria,
+        "Many small circular necrotic spots",
+    ),
+    ConditionProfile(
+        "leaf_rust", "Leaf Rust", "الصدأ",
+        ("wheat", "barley", "grape"),
+        _fit_rust,
+        "Orange-ochre rust pustules on foliage",
+    ),
+    ConditionProfile(
+        "powdery_mildew", "Powdery Mildew", "البَيَاض الدقيقي",
+        ("grape", "wheat", "tomato", "potato", "date-palm"),
+        _fit_powdery,
+        "Bright powdery surface colonization",
+    ),
+    ConditionProfile(
+        "nitrogen_deficiency", "Nitrogen Deficiency", "نقص النيتروجين",
+        None,
+        _fit_deficiency_n,
+        "Generalized chlorosis without necrotic spotting",
+    ),
+    ConditionProfile(
+        "potassium_deficiency", "Potassium Deficiency", "نقص البوتاسيوم",
+        None,
+        _fit_deficiency_k,
+        "Marginal necrotic burn (border necrosis)",
+    ),
+    ConditionProfile(
+        "healthy_leaf", "Healthy Leaf", "ورقة سليمة",
+        None,
+        _fit_healthy,
+        "No measurable lesion pressure detected",
+    ),
+)
+
+
+def _match_conditions(m: VisionMetrics, crop: str | None) -> list[dict[str, Any]]:
+    """Score all profiles → ranked candidates with honest confidences."""
+    scored: list[tuple[float, ConditionProfile]] = []
+    for prof in PROFILES:
+        fit = prof.fit(m)
+        if fit <= 0.0:
+            continue
+        if prof.crops is not None and crop is not None and crop not in prof.crops:
+            fit *= 0.55  # penalty, not a veto (symptoms overlap species)
+        scored.append((fit, prof))
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    if not scored:
+        return [{
+            "id": "uncertain_condition",
+            "name_en": "Uncertain Spot Pattern",
+            "name_ar": "نمط بقع غير مؤكد",
+            "confidence": 0.10,
+            "summary": "Lesion pixels are present but no condition profile matched.",
+        }]
+
+    # confidence = fit × segmentation consensus × ambiguity margin
+    margin = 1.0
+    if len(scored) > 1 and (scored[0][0] - scored[1][0]) < 0.12:
+        margin = 0.80
     out: list[dict[str, Any]] = []
-    for row in rows[:3]:
-        if not isinstance(row, dict):
-            continue
-        label = str(row.get("label") or "").strip()[:80]
-        cid = str(row.get("id") or "").strip().lower()
-        cid = re.sub(r"[^a-z0-9-]+", "-", cid).strip("-")[:32] or "crop"
-        if not label:
-            continue
-        out.append({"id": cid, "label": label, "confidence": clamp01(row.get("confidence", 0.5))})
-    if not out:
-        raise ValueError("no usable candidates in vision response")
+    for fit, prof in scored[:3]:
+        conf = round(_clamp(fit * (0.55 + 0.45 * m.segmentation_dice_score) * margin), 2)
+        out.append({
+            "id": prof.cond_id,
+            "name_en": prof.name_en,
+            "name_ar": prof.name_ar,
+            "confidence": conf,
+            "summary": prof.summary_en,
+        })
     return out
 
 
-def _coerce_disease(payload: dict[str, Any]) -> dict[str, Any]:
-    disease = payload.get("disease")
-    if not isinstance(disease, dict):
-        raise ValueError("missing disease object")
-    name_ar = str(disease.get("name_ar") or "").strip()[:160]
-    name_en = str(disease.get("name_en") or "").strip()[:160]
-    if not name_ar or not name_en:
-        raise ValueError("missing disease name")
+# ======================================================================
+# Bilingual symptom templates (measured, not invented)
+# ======================================================================
+_SYM_NECROTIC = (
+    "{n} necrotic (brown) lesions detected across the leaf surface",
+    "تم رصد {n} بقعة بنية ميتة على سطح الورقة",
+)
+_SYM_AREA = (
+    "Measured affected area: {pct}% of the leaf surface",
+    "المساحة المصابة المقاسة: {pct}% من سطح الورقة",
+)
+_SYM_HALO = (
+    "Yellow chlorotic halos around lesion cores",
+    "أطراف صفراء حول تجمعات النقاط",
+)
+_SYM_WATER = (
+    "Dark water-soaked patches (blight-type tissue collapse)",
+    "بقع داكنة مبتلّة (انسجام نسيجي من نوع اللفحة)",
+)
+_SYM_POWDERY = (
+    "Bright powdery surface growth (mildew-type colonization)",
+    "نمو أبيض مغبر على السطح (من نوع الدقيقي)",
+)
+_SYM_RUST = (
+    "Orange-ochre pustules (rust-type fruiting bodies)",
+    "بثّات برتقالية مائلة للحمرة (من نوع الصدأ)",
+)
+_SYM_MARGINAL = (
+    "Marginal necrotic burn along the leaf edges",
+    "احتراق محيطي (موت نسيجي) على حواف الورقة",
+)
+_SYM_CHLOROSIS = (
+    "Generalized yellowing (chlorosis) between the veins",
+    "اصفرار عام بين العروق",
+)
+_SYM_HEALTHY = (
+    "No visible lesions — foliage measures as healthy",
+    "لا توجد بقع ظاهرة — الأوراق تُقاس كسليمة",
+)
 
-    chemicals: list[dict[str, str]] = []
-    raw_chemicals = payload.get("chemical_treatments")
-    if isinstance(raw_chemicals, list):
-        for row in raw_chemicals[:5]:
-            if isinstance(row, dict):
-                product = str(row.get("product") or "").strip()[:200]
-                usage = str(row.get("usage") or row.get("dose") or "").strip()[:240]
-                if product:
-                    chemicals.append({"product": product, "usage": usage})
-            elif isinstance(row, str) and row.strip():
-                chemicals.append({"product": row.strip()[:200], "usage": ""})
 
-    alternatives: list[dict[str, Any]] = []
-    raw_alts = payload.get("alternatives")
-    if isinstance(raw_alts, list):
-        for row in raw_alts[:2]:
-            if isinstance(row, dict):
-                alt = str(row.get("name_ar") or "").strip()[:160]
-                if alt:
-                    alternatives.append(
-                        {"name_ar": alt, "confidence": clamp01(row.get("confidence", 0.3))}
-                    )
-
-    return {
-        "name_ar": name_ar,
-        "name_en": name_en,
-        "confidence": clamp01(disease.get("confidence", 0.5)),
-        "summary": str(payload.get("summary") or "").strip()[:500],
-        "symptoms": str_list(payload, "symptoms", lo=1, hi=6),
-        "immediate_actions": str_list(payload, "immediate_actions", lo=1, hi=6),
-        "cultural_treatments": str_list(payload, "cultural_treatments", lo=1, hi=6),
-        "chemical_treatments": chemicals,
-        "monitoring": str_list(payload, "monitoring", lo=1, hi=4),
-        "prevention": str_list(payload, "prevention", lo=1, hi=4),
-        "alternatives": alternatives,
-    }
+def _symptoms(m: VisionMetrics) -> list[dict[str, str]]:
+    """Bilingual symptom rows derived from the measured metrics."""
+    f = m.color_fractions
+    rows: list[dict[str, str]] = []
+    if m.lesion_count:
+        rows.append({"en": _SYM_NECROTIC[0].format(n=m.lesion_count),
+                     "ar": _SYM_NECROTIC[1].format(n=m.lesion_count)})
+        rows.append({"en": _SYM_AREA[0].format(pct=m.affected_area_percentage),
+                     "ar": _SYM_AREA[1].format(pct=m.affected_area_percentage)})
+    if f.get("necrotic", 0.0) > 0.01 and m.halo_index > 0.15:
+        rows.append({"en": _SYM_HALO[0], "ar": _SYM_HALO[1]})
+    if f.get("water_soaked", 0.0) > 0.01:
+        rows.append({"en": _SYM_WATER[0], "ar": _SYM_WATER[1]})
+    if f.get("powdery", 0.0) > 0.01:
+        rows.append({"en": _SYM_POWDERY[0], "ar": _SYM_POWDERY[1]})
+    if f.get("rust_ochre", 0.0) > 0.005:
+        rows.append({"en": _SYM_RUST[0], "ar": _SYM_RUST[1]})
+    if m.border_necrosis_share > 0.3 and f.get("necrotic", 0.0) > 0.01:
+        rows.append({"en": _SYM_MARGINAL[0], "ar": _SYM_MARGINAL[1]})
+    if f.get("chlorotic", 0.0) > 0.03 and f.get("necrotic", 0.0) <= 0.02:
+        rows.append({"en": _SYM_CHLOROSIS[0], "ar": _SYM_CHLOROSIS[1]})
+    if not rows:
+        rows.append({"en": _SYM_HEALTHY[0], "ar": _SYM_HEALTHY[1]})
+    return rows
 
 
 # ======================================================================
 # The agent
 # ======================================================================
 class DiagnosticAgent:
-    """Autonomous vision pathology agent (hypothesize → verify → refine)."""
+    """Autonomous local diagnostic agent (crop resolution + disease pass)."""
 
     name = "diagnostic"
 
     async def analyze_full(self, ctx: AgentContext) -> dict[str, Any]:
-        """Full protocol: crop candidates + deep verdict in one run.
-
-        Returns ``{"candidates": [...], name_ar, name_en, confidence,
-        summary, ... , "engine": "gemini", "latency_ms": int}``.
-        Raises :class:`AgentFailure` — there is no mock fallback.
-        """
-        return await self._run(ctx, full=True)
+        """Auto path: one local pass producing candidates + verdict."""
+        analysis = await self._analyze_local(ctx)
+        crop = (ctx.crop_id or "").strip() or None
+        if crop:
+            candidates = [_user_crop_candidate(crop)]
+        else:
+            candidates = _regional_candidates()
+        analysis["candidates"] = candidates
+        analysis["crop_resolved"] = bool(crop)
+        return analysis
 
     async def analyze_disease(self, ctx: AgentContext) -> dict[str, Any]:
-        """Full protocol after the farmer confirmed the crop (deep shot)."""
-        return await self._run(ctx, full=False)
+        """Confirmed-crop path: deep disease pass for the chosen crop."""
+        return await self._analyze_local(ctx)
 
-    # -- the reasoning protocol -----------------------------------------
-    async def _run(self, ctx: AgentContext, *, full: bool) -> dict[str, Any]:
-        settings = get_settings()
-        trace = ctx.trace
-        loop = asyncio.get_running_loop()
-        run_started = loop.time()
-        budget = float(ctx.budget_s or settings.AGENT_DIAGNOSTIC_BUDGET_SECONDS)
-        base_prompt = _full_prompt() if full else _disease_prompt(
-            ctx.crop_label or "", ctx.crop_id
-        )
-        coerce = _coerce_full if full else _coerce_disease
-        schema = _VisionPayload if full else _DiseasePayload
-
-        # Stage 1 — hypothesis: ONE structured vision pass.
-        t0 = loop.time()
-        try:
-            analysis = coerce(
-                await CognitionEngine.structured_json(
-                    model=settings.vision_model_name,
-                    contents=await self._contents(ctx, base_prompt),
-                    config=self._config(schema, max_tokens=2048 if full else 1024),
-                    timeout=max(min(budget, settings.VISION_TIMEOUT_SECONDS), 10.0),
-                    agent=self.name,
-                )
-            )
-        except AgentFailure:
-            raise
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - honest failure, no fabrication
-            raise AgentFailure(
-                f"diagnostic hypothesis failed: {exc}", kind="busy", agent=self.name
-            ) from exc
-        trace.record(
-            self.name,
-            "hypothesis",
-            "structured vision pass",
-            "verdict",
-            ms=int((loop.time() - t0) * 1000),
-            confidence=analysis["confidence"],
-            diagnosis=analysis["name_en"],
-        )
-
-        # Stage 2 — self-verification (optional per config/band).
-        if not settings.AGENT_SELF_CHECK:
-            trace.record(self.name, "self_verify", "config disabled", "skipped")
-        elif not (_VERIFY_BAND[0] <= analysis["confidence"] <= _VERIFY_BAND[1]):
-            trace.record(
-                self.name,
-                "self_verify",
-                f"confidence {analysis['confidence']:.2f} outside band",
-                "skipped",
-            )
-        else:
-            analysis = await self._verify_and_maybe_refine(
-                ctx=ctx,
-                analysis=analysis,
-                base_prompt=base_prompt,
-                schema=schema,
-                coerce=coerce,
-                run_started=run_started,
-                budget=budget,
-            )
-
-        analysis["engine"] = "gemini"
-        analysis["latency_ms"] = int((loop.time() - run_started) * 1000)
-        return analysis
-
-    async def _verify_and_maybe_refine(
-        self,
-        *,
-        ctx: AgentContext,
-        analysis: dict[str, Any],
-        base_prompt: str,
-        schema: type[BaseModel],
-        coerce: Any,
-        run_started: float,
-        budget: float,
-    ) -> dict[str, Any]:
-        """Critique the verdict; refine at most once. Never blocks."""
-        settings = get_settings()
-        trace = ctx.trace
-        loop = asyncio.get_running_loop()
-        elapsed = loop.time() - run_started
-        remaining = budget - elapsed
-
-        # Text-only critique of the verdict already in hand.
-        t0 = loop.time()
-        try:
-            critique = await CognitionEngine.structured_json(
-                model=settings.GEMINI_MODEL_NAME,
-                contents=_verify_prompt(analysis, ctx.crop_label),
-                config=self._config(_CritiquePayload, max_tokens=768),
-                timeout=max(min(remaining, 30.0), 8.0),
-                agent=self.name,
-            )
-        except AgentFailure as exc:
-            # Verification is best-effort: an unavailable self-check must
-            # never destroy a real, live verdict (robust recovery).
-            trace.record(
-                self.name,
-                "self_verify",
-                "critique own verdict",
-                "unavailable",
-                ms=int((loop.time() - t0) * 1000),
-                reason=exc.kind,
-            )
-            return analysis
-        except Exception as exc:  # noqa: BLE001 - malformed critique etc.
-            trace.record(
-                self.name,
-                "self_verify",
-                "critique own verdict",
-                "unavailable",
-                ms=int((loop.time() - t0) * 1000),
-                reason="parse_error",
-                detail=str(exc)[:120],
-            )
-            return analysis
-
-        consistent = bool(critique.get("consistent", True))
-        issues = [
-            s for s in (critique.get("issues") or []) if isinstance(s, str)
-        ][:6]
-        try:
-            adjustment = float(critique.get("confidence_adjustment") or 0.0)
-        except (TypeError, ValueError):
-            adjustment = 0.0
-        adjustment = max(-0.2, min(0.2, adjustment))
-        trace.record(
-            self.name,
-            "self_verify",
-            "critique own verdict",
-            "consistent" if consistent else "inconsistent",
-            ms=int((loop.time() - t0) * 1000),
-            issues=len(issues),
-        )
-
-        # Stage 3 — bounded refine: at most ONE re-analysis.
-        if not consistent and analysis["confidence"] >= 0.45 and _MAX_REFINES >= 1:
-            t0 = loop.time()
-            try:
-                refined = coerce(
-                    await CognitionEngine.structured_json(
-                        model=settings.vision_model_name,
-                        contents=await self._contents(
-                            ctx, _refine_prompt(base_prompt, issues)
-                        ),
-                        config=self._config(schema, max_tokens=2048),
-                        timeout=max(budget - (loop.time() - run_started), 8.0),
-                        agent=self.name,
-                    )
-                )
-                trace.record(
-                    self.name,
-                    "refine",
-                    "re-examine photo with critique issues",
-                    "refined",
-                    ms=int((loop.time() - t0) * 1000),
-                    confidence=refined["confidence"],
-                    diagnosis=refined["name_en"],
-                )
-                return refined
-            except AgentFailure as exc:
-                # Keep the original real verdict — refinement is optional.
-                trace.record(
-                    self.name,
-                    "refine",
-                    "re-examine photo with critique issues",
-                    "kept_original",
-                    ms=int((loop.time() - t0) * 1000),
-                    reason=exc.kind,
-                )
-                return analysis
-            except Exception as exc:  # noqa: BLE001 - malformed refinement
-                trace.record(
-                    self.name,
-                    "refine",
-                    "re-examine photo with critique issues",
-                    "kept_original",
-                    ms=int((loop.time() - t0) * 1000),
-                    reason="parse_error",
-                    detail=str(exc)[:120],
-                )
-                return analysis
-
-        if consistent and abs(adjustment) >= 0.01:
-            analysis["confidence"] = clamp01(analysis["confidence"] + adjustment)
-            trace.record(
-                self.name,
-                "confidence",
-                "apply self-check adjustment",
-                "adjusted",
-                delta=round(adjustment, 3),
-                confidence=analysis["confidence"],
-            )
-        return analysis
-
-    # -- internals ----------------------------------------------------
-    @staticmethod
-    def _config(schema: type[BaseModel], *, max_tokens: int) -> Any:
-        return CognitionEngine.config(schema, temperature=0.15, max_tokens=max_tokens)
-
-    @staticmethod
-    async def _contents(ctx: AgentContext, prompt: str) -> list[Any]:
-        """[prompt, optimised image part] — encoding off the event loop."""
+    # ------------------------------------------------------------------
+    async def _analyze_local(self, ctx: AgentContext) -> dict[str, Any]:
+        started = time.perf_counter()
         if ctx.image is None:
-            raise AgentFailure("no image in agent context", agent="diagnostic")
+            raise AgentFailure("vision_processing", "No image was provided to the agent.")
+        try:
+            metrics: VisionMetrics = await analyze_leaf_async(ctx.image)
+        except Exception as exc:  # segmentation impossible
+            logger.warning("local vision failed: %s", exc)
+            raise AgentFailure(
+                "vision_processing", "The image could not be analysed locally."
+            ) from exc
 
-        def _part() -> Any:
-            data, mime = optimize_image(ctx.image, ctx.raw_bytes, ctx.raw_mime)
-            return CognitionEngine.image_part(data, mime)
+        ctx.trace.record(
+            self.name, "local_segment",
+            "segment leaf + lesions (OpenCV/NumPy)",
+            f"{metrics.lesion_count} lesion(s), {metrics.affected_area_percentage}% area",
+            ms=metrics.latency_ms,
+            mode=metrics.mode,
+            dice=metrics.segmentation_dice_score,
+        )
 
-        return [prompt, await asyncio.to_thread(_part)]
+        crop = (ctx.crop_id or "").strip() or None
+        candidates = _match_conditions(metrics, crop)
+        top = candidates[0]
+
+        analysis: dict[str, Any] = {
+            "condition_id": top["id"],
+            "name_en": top["name_en"],
+            "name_ar": top["name_ar"],
+            "confidence": top["confidence"],
+            "summary": top["summary"],
+            "symptoms": _symptoms(metrics),
+            "alternatives": candidates[1:],
+            "quantitative": metrics.as_dict(),
+            "affected_area_percentage": metrics.affected_area_percentage,
+            "severity": metrics.severity,
+            "engine": _ENGINE,
+            "pipeline": _PIPELINE_TAG,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+        ctx.trace.record(
+            self.name, "condition_match",
+            "score condition profiles against measured features",
+            f"{top['name_en']} @ {top['confidence']:.2f}",
+            alternatives=[a["name_en"] for a in analysis["alternatives"]],
+        )
+        return analysis
 
 
-def _coerce_full(payload: dict[str, Any]) -> dict[str, Any]:
-    """Single-call payload: crop candidates + disease analysis."""
-    analysis = _coerce_disease(payload)
-    analysis["candidates"] = _coerce_candidates(payload)
-    return analysis
+def _regional_candidates() -> list[dict[str, Any]]:
+    out = []
+    for cid in REGIONAL_PRIOR[:3]:
+        out.append({
+            "id": cid,
+            "label": _CROP_EN.get(cid, cid),
+            "label_ar": _CROP_AR.get(cid, cid),
+            # prior only — the local engine cannot classify crop species
+            # from a leaf photo; the farmer decides. Kept far below the
+            # auto-confirm threshold on purpose.
+            "confidence": 0.35,
+            "source": "regional_prior",
+        })
+    return out
+
+
+def _user_crop_candidate(crop: str) -> dict[str, Any]:
+    cid = crop if crop in _CROP_EN else f"custom:{crop}"
+    return {
+        "id": cid,
+        "label": _CROP_EN.get(crop, crop),
+        "label_ar": _CROP_AR.get(crop, crop),
+        "confidence": 1.0,
+        "source": "user_selected",
+    }

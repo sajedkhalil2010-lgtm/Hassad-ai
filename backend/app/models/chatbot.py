@@ -1,8 +1,8 @@
 """Chatbot models: sessions, messages and the offline knowledge base.
 
-The knowledge base powers the retrieval half of the RAG pipeline: excerpts are
-retrieved with a language-agnostic (Arabic + English) lexical scorer, injected
-into the Gemini prompt and returned to the client as **citation cards**.
+The knowledge base powers the chat answers: excerpts are retrieved with
+a language-agnostic (Arabic + English) lexical scorer, assembled into
+the local answer and returned to the client as **citation cards**.
 """
 
 from __future__ import annotations

@@ -128,16 +128,16 @@ class Diagnosis(Base):
     def source(self) -> str:
         """Result provenance exposed to clients.
 
-        ``model``      — live inference (Gemini answered), always the case
-                         for records created by the live-only pipeline,
-        ``mock``       — legacy historical rows only; the mock engine was
-                         removed — failures now answer 503 instead,
+        ``local_cv``     — local OpenCV/NumPy engine answered, always the
+                           case for records created by the v4 pipeline,
+        ``mock``         — legacy historical rows only; the mock engine
+                           was removed — failures now answer 503 instead,
         ``quality_gate`` — local image-quality checks only (retake path).
         """
         meta = self.model_meta
         if isinstance(meta, dict):
-            return str(meta.get("source") or "model")
-        return "model"
+            return str(meta.get("source") or "local_cv")
+        return "local_cv"
 
     __table_args__ = (
         UniqueConstraint("farmer_id", "client_id", name="uq_diagnoses_farmer_id_client_id"),

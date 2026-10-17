@@ -1,5 +1,5 @@
-"""AI service adapters (local KB + image quality gate). The Gemini-facing
-logic moved to the v2 multi-agent framework in ``app.agents``."""
+"""AI service adapters (local KB + image quality gate). All AI reasoning
+lives in the v4 multi-agent framework in ``app.agents``."""
 
 from app.agents.knowledge import seed_knowledge_base
 

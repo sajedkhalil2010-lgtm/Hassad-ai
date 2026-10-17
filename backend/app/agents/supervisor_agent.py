@@ -1,12 +1,11 @@
 """SupervisorAgent — autonomous coordination of the diagnosis workflow.
 
-v3: the supervisor no longer walks a straight line. It is a genuine
-**coordination loop**:
+v4 — 100% local autonomy: the supervisor is the coordination loop of a
+fully local stack (OpenCV/NumPy vision + Tébessa KB advisory). No
+external API, no key pool, no quota — the loop itself is unchanged:
 
 1. **Plan** — from the run inputs it builds a stage plan (a
-   farmer-confirmed crop skips vision identification entirely; the
-   auto path runs one shot and only continues when the threshold policy
-   allows).
+   farmer-confirmed crop skips the auto path entirely).
 2. **Dispatch → evaluate → decide** — each stage is dispatched to the
    right agent, its result is evaluated against the decision policy, and
    the supervisor decides the next dispatch: continue, ask the farmer to
@@ -19,17 +18,16 @@ v3: the supervisor no longer walks a straight line. It is a genuine
 Stage policy (settings-driven thresholds):
 
 * crop confidence < ``CROP_AUTO_THRESHOLD`` → ask the farmer (top-3
-  candidates shipped back).
+  candidates shipped back; the local engine cannot classify crop
+  species, so this is the normal first-upload path).
 * disease confidence ≥ ``DISEASE_CONFIRM_THRESHOLD`` → confirmed +
-  AdvisorAgent localized treatment plan.
+  AdvisorAgent Tébessa-localized treatment plan.
 * ≥ ``DISEASE_REVIEW_THRESHOLD`` → agronomist review queue.
 * below → retake guidance.
 
-Key management is delegated to the KeyPoolManager policy (rotation on
-429, quota memo, zero SDK retries) executed by the CognitionEngine
-gateway. Failures from any agent propagate as
-:class:`~app.agents.base.AgentFailure` (quota|busy) so the router can
-answer an honest structured 429/503 — no mock verdict exists.
+Failures from any agent propagate as
+:class:`~app.agents.base.AgentFailure` (busy) so the router can answer
+an honest structured 503 — no mock verdict exists anywhere.
 """
 
 from __future__ import annotations
@@ -47,8 +45,13 @@ from app.schemas.diagnosis import CropCandidate
 
 logger = logging.getLogger("hassad.agents.supervisor")
 
-#: Stage sequences. A confirmed-by-hand crop skips vision identification;
-#: the auto path identifies crop + disease in one shot, gates on the crop
+#: Identity of this pipeline in reports/health.
+PIPELINE_ID = "supervisor_v4"
+ENGINE = "local_cv"
+ENGINE_MODEL = "opencv-numpy-local"
+
+#: Stage sequences. A confirmed-by-hand crop skips the auto path; the
+#: auto path segments + matches in one shot, gates on the crop
 #: threshold, then runs the same disease policy + advisory stages.
 _PLAN_AUTO = ("diagnose_full", "policy_crop", "policy_disease", "advise")
 _PLAN_USER_CROP = ("resolve_crop", "diagnose_deep", "policy_disease", "advise")
@@ -81,7 +84,7 @@ class _Run:
         self.crop_label: str | None = None
         self.crop_confidence: float | None = None
         self.crop_source: str | None = None
-        self.crop_engine = "user"  # "user" | "gemini"
+        self.crop_engine = "user"  # "user" | "local_cv"
         self.disease: dict[str, Any] | None = None
         self.vision_latency: int | None = None
         self.status: str | None = None
@@ -184,9 +187,9 @@ class SupervisorAgent:
     async def _stage_resolve_crop(
         self, ctx: AgentContext, run: _Run, previous: list[CropCandidate]
     ) -> dict[str, Any] | None:
-        """Farmer confirmed the crop — resolve locally, no model needed."""
+        """Farmer confirmed the crop — resolve locally, no agent needed."""
         crop_id, crop_label = resolve_crop_selection(ctx.selected_crop or "", previous)
-        ctx.crop_id, ctx.crop_label = crop_id, crop_label  # for the deep shot's prompt
+        ctx.crop_id, ctx.crop_label = crop_id, crop_label  # for the deep shot
         run.crop_id, run.crop_label = crop_id, crop_label
         run.crop_confidence = 1.0
         run.crop_source = CropSource.USER_SELECTED.value
@@ -198,13 +201,13 @@ class SupervisorAgent:
     async def _stage_diagnose_full(
         self, ctx: AgentContext, run: _Run, settings: Any
     ) -> dict[str, Any] | None:
-        """ONE live agent shot (candidates + deep verdict) — auto path."""
+        """ONE local pass (candidates + verdict) — auto path."""
         full_analysis = await self.diagnostic.analyze_full(ctx)
-        run.crop_engine = str(full_analysis.get("engine") or "gemini")
+        run.crop_engine = str(full_analysis.get("engine") or ENGINE)
         run.vision_latency = full_analysis.get("latency_ms")
         run.candidates = _candidate_objects(full_analysis.get("candidates") or [])
         if not run.candidates:  # defensive: never 500 — ask the farmer instead
-            run.candidates = [CropCandidate(id="tomato", label="Tomato", confidence=0.5)]
+            run.candidates = [CropCandidate(id="wheat", label="Wheat", confidence=0.35)]
         top = run.candidates[0]
         run.crop_id, run.crop_label, run.crop_confidence = top.id, top.label, top.confidence
         run.crop_source = CropSource.MODEL_AUTO.value
@@ -214,9 +217,9 @@ class SupervisorAgent:
     async def _stage_diagnose_deep(
         self, ctx: AgentContext, run: _Run, settings: Any
     ) -> dict[str, Any] | None:
-        """Deep disease shot after the farmer confirmed the crop."""
+        """Deep disease pass after the farmer confirmed the crop."""
         run.disease = await self.diagnostic.analyze_disease(ctx)
-        run.crop_engine = str(run.disease.get("engine") or "gemini")
+        run.crop_engine = str(run.disease.get("engine") or ENGINE)
         run.vision_latency = run.disease.get("latency_ms")
         return None
 
@@ -236,15 +239,14 @@ class SupervisorAgent:
         run.requires_crop_selection = True
         run.status = DiagnosisStatus.AWAITING_CROP_SELECTION.value
         run.message = (
-            f"I could not identify the crop with enough confidence "
-            f"(best guess: {top.label} at {top.confidence:.0%}). "
-            f"Please pick one of the candidates: "
-            + ", ".join(f"{c.label} ({c.confidence:.0%})" for c in run.candidates)
+            "Please confirm the crop you are growing so I can analyse the leaf "
+            f"accurately (suggested: {top.label}). Candidates: "
+            + ", ".join(c.label for c in run.candidates)
         )
         ctx.trace.record(self.name, "policy_crop",
                          "crop confidence below threshold", "awaiting_crop_selection",
                          confidence=top.confidence)
-        # v2 contract: awaiting-crop reports carry no disease verdict
+        # Contract: awaiting-crop reports carry no disease verdict
         # (nothing is persisted about a disease the farmer hasn't picked).
         run.disease = None
         return self._report(
@@ -293,7 +295,7 @@ class SupervisorAgent:
         else:
             run.status = DiagnosisStatus.RETAKE_REQUIRED.value
             run.message = (
-                f"Low confidence ({disease_confidence:.0%}) — the disease could not be "
+                f"Low confidence ({disease_confidence:.0%}) — the condition could not be "
                 "identified reliably. Retake: get close to a single affected leaf, keep "
                 "it flat, and use bright indirect daylight with a plain background."
             )
@@ -325,14 +327,14 @@ class SupervisorAgent:
         """One unified, clean JSON-ready report for the router/frontend."""
         vision: dict[str, Any] = {
             "crop": run.crop_engine,
-            "model": settings.vision_model_name,
+            "model": ENGINE_MODEL,
             "latency_ms": run.vision_latency,
         }
         if stage == 2 and run.disease:
-            vision["disease"] = str(run.disease.get("engine") or "gemini")
+            vision["disease"] = str(run.disease.get("engine") or ENGINE)
         meta = cls._meta(
             quality=quality_report,
-            source="model",
+            source=ENGINE,
             vision=vision,
             alternatives=(
                 (run.disease or {}).get("alternatives", []) if stage == 2 else None
@@ -340,8 +342,9 @@ class SupervisorAgent:
             started=started,
             settings=settings,
         )
-        return {
-            "pipeline": "supervisor_v3",
+        quantitative = (run.disease or {}).get("quantitative") if stage == 2 else None
+        report: dict[str, Any] = {
+            "pipeline": PIPELINE_ID,
             "status": run.status,
             "stage": stage,
             "requires_crop_selection": run.requires_crop_selection,
@@ -358,6 +361,11 @@ class SupervisorAgent:
             "treatment_plan": run.treatment_plan,
             "model_meta": meta,
         }
+        if quantitative:
+            # Additive technical section (the untouched frontend ignores
+            # unknown keys; presentations and /analyze consumers use it).
+            report["quantitative"] = quantitative
+        return report
 
     @staticmethod
     def _meta(
@@ -370,10 +378,8 @@ class SupervisorAgent:
         alternatives: list[Any] | None = None,
     ) -> dict[str, Any]:
         meta: dict[str, Any] = {
-            # `source` keeps its historical value ("model") — the frontend
-            # branches on it; v3 identity travels under `pipeline`.
             "source": source,
-            "pipeline": "supervisor_v3",
+            "pipeline": PIPELINE_ID,
             "agents": ["diagnostic", "advisor", "supervisor"],
             "vision": vision,
             "quality": quality or {},

@@ -1,20 +1,18 @@
-"""Hassad AI v2/v3 — shared multi-agent contracts.
+"""Hassad AI v4 — shared multi-agent contracts.
 
 Small, dependency-free primitives every agent builds on:
 
-* :class:`AgentFailure` — the *only* way an agent reports that the
-  underlying model could not deliver. ``kind`` is ``"quota"`` (the free
-  tier's daily allowance ran out — retry after Google's reset window) or
-  ``"busy"`` (congestion/timeout — retry in moments). No agent ever
-  fabricates a verdict; failures propagate so the router can answer with
-  an honest, structured HTTP 429/503.
+* :class:`AgentFailure` — the *only* way an agent reports that it could
+  not deliver a result (unreadable image, segmentation impossible …).
+  No agent ever fabricates a verdict; failures propagate so the router
+  can answer with an honest, structured HTTP error.
 * :class:`AgentContext` — one bag of run inputs (image bytes, crop
   hints, language preference, deadlines) threaded through the
   supervisor → agents sequence.
 * :class:`RunTrace` — the shared **blackboard**: every agent appends its
   reasoning steps (act → outcome → milliseconds) as it decides what to
-  do next. The supervisor ships it in ``model_meta.agents.trace`` as
-  auditable proof of autonomous coordination.
+  do next. The supervisor ships it in ``model_meta.trace`` as auditable
+  proof of autonomous coordination.
 * Defensive payload coercers + the canonical crop vocabulary, shared by
   the diagnostic pipeline.
 
@@ -32,8 +30,8 @@ from typing import Any
 from PIL import Image
 
 #: (id, English name, Arabic name) — canonical crop vocabulary; the
-#: diagnostic agent is instructed to choose from this list so selection
-#: ids stay stable for the (untouched) frontend.
+#: frontend renders whatever ids come back, so the Tébessa staples
+#: (olive, almond) were added for the Algerian steppe belt.
 CROP_VOCAB: tuple[tuple[str, str, str], ...] = (
     ("tomato", "Tomato", "طماطم"),
     ("potato", "Potato", "بطاطس"),
@@ -45,6 +43,8 @@ CROP_VOCAB: tuple[tuple[str, str, str], ...] = (
     ("soybean", "Soybean", "فول صويا"),
     ("barley", "Barley", "شعير"),
     ("date-palm", "Date Palm", "نخيل"),
+    ("olive", "Olive", "زيتون"),
+    ("almond", "Almond", "لوز"),
 )
 
 #: mime lookup for the validated upload formats.
@@ -57,11 +57,13 @@ def raw_mime_for(image_format: str) -> str:
 
 
 class AgentFailure(RuntimeError):
-    """An agent could not deliver a live result — never swallowed.
+    """An agent could not deliver a local result — never swallowed.
 
     Raised by every agent stage; the supervisor and routers convert it
     into structured, user-friendly HTTP errors instead of fabricating
-    output. ``kind``: ``"quota"`` | ``"busy"``.
+    output. ``kind``: ``"quota"`` (kept for contract compatibility; no
+    longer produced — there is no external API to rate-limit) |
+    ``"busy"`` (unexpected internal failure).
     """
 
     def __init__(self, message: str, *, kind: str = "busy", agent: str = "") -> None:

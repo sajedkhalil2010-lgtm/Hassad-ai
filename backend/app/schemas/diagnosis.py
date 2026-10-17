@@ -85,8 +85,8 @@ class DiagnosisResponse(BaseModel):
     status: DiagnosisStatus
     requires_crop_selection: bool = False
     message: str = ""
-    #: "model" = live Gemini inference · "quality_gate" · "mock" = legacy rows only
-    source: str = "model"
+    #: "local_cv" = local OpenCV/NumPy engine · "quality_gate" · "mock" = legacy rows only
+    source: str = "local_cv"
 
     crop_id: str | None = None
     crop_label: str | None = None
@@ -304,6 +304,7 @@ class ChatAskRequest(BaseModel):
 class ChatAskResponse(BaseModel):
     answer: str
     citations: list[CitationCard] = Field(default_factory=list)
-    mode: Literal["gemini", "retrieval_fallback"] = "gemini"
+    #: "local_kb" = local knowledge-base retrieval (v4 default; no remote model)
+    mode: Literal["local_kb", "gemini", "retrieval_fallback"] = "local_kb"
     session_id: str | None = None
     notice: str | None = None

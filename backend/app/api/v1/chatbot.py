@@ -35,6 +35,7 @@ from app.schemas.diagnosis import (
     CitationCard,
 )
 from app.agents import AdvisorAgent
+from app.agents.advisor_agent import CHAT_MODE
 from app.agents.knowledge import (
     build_crop_context,
     citation_cards,
@@ -45,9 +46,9 @@ from app.agents.knowledge import (
 
 logger = logging.getLogger("hassad.api.chatbot")
 
-#: Process-wide advisor agent (stateless): streams RAG-grounded answers
-#: through the KeyPoolManager — multi-key rotation on 429, zero SDK
-#: retries, hard total deadline, retrieval fallback when no key answers.
+#: Process-wide advisor agent (stateless): answers are assembled from the
+#: local knowledge-base retrieval (``mode="local_kb"``) — no remote
+#: model, no keys, no rate limit.
 _advisor = AdvisorAgent()
 
 router = APIRouter(prefix="/chatbot", tags=["Chatbot"])
@@ -312,8 +313,7 @@ async def send_message(
 
     async def event_stream():  # noqa: ANN202 - async generator of SSE strings
         parts: list[str] = []
-        mode = "gemini" if settings.gemini_configured else "retrieval_fallback"
-        state: dict[str, str] = {"mode": mode}
+        state: dict[str, str] = {"mode": CHAT_MODE}
         try:
             async for piece in _advisor.stream_advice(
                 question=payload.content,
@@ -332,7 +332,7 @@ async def send_message(
                 session_id=session_id,
                 content="".join(parts),
                 citations=citation_cards(retrieved_docs, "".join(parts)),
-                mode=f"{mode}:error",
+                mode=f"{CHAT_MODE}:error",
             )
             yield _sse("error", {"type": "error", "detail": exc.detail})
             return
@@ -350,7 +350,7 @@ async def send_message(
             )
             return
 
-        mode = state["mode"]  # may have degraded to retrieval mid-stream
+        mode = state["mode"]  # always "local_kb" (kept for wire compat)
         full_answer = "".join(parts)
         cards = citation_cards(retrieved_docs, full_answer)
         message_id = await _persist_assistant_message(
@@ -401,7 +401,7 @@ async def ask(payload: ChatAskRequest, db: DbSession, user: CurrentUser) -> Chat
     ]
     lang = detect_language(payload.question, payload.lang)
 
-    state: dict[str, str] = {"mode": "gemini" if settings.gemini_configured else "retrieval_fallback"}
+    state: dict[str, str] = {"mode": CHAT_MODE}
     answer = await _advisor.answer_once(
         question=payload.question,
         docs=retrieved_docs,
@@ -412,12 +412,7 @@ async def ask(payload: ChatAskRequest, db: DbSession, user: CurrentUser) -> Chat
     )
     cards = citation_cards(retrieved_docs, answer)
     mode = state["mode"]
-    if mode == "gemini":
-        notice = None
-    elif state.get("reason") == "not_configured":
-        notice = "GEMINI_API_KEY not configured — retrieval-only answer."
-    else:
-        notice = f"Gemini unavailable ({state.get('reason', 'unknown')}) — retrieval-only answer."
+    notice = None  # local KB answers are the primary mode — nothing degraded
 
     if payload.session_id:
         chat_session = await _owned_session(db, user.id, payload.session_id)

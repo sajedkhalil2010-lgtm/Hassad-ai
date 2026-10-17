@@ -5,9 +5,9 @@ normalisation, defixing, synonym expansion, the lexical scorer, citation
 cards, prompt assembly, DB loading/context helpers and the seeder.
 
 **No API calls live here** — this layer is 100% local and offline; the
-generation it used to drive now belongs to the AdvisorAgent
-(``app.agents.advisor_agent``), which streams answers through the
-KeyPoolManager (multi-key rotation, zero SDK retries).
+answers it powers are assembled by the AdvisorAgent
+(``app.agents.advisor_agent``) directly from the retrieved documents
+(``mode="local_kb"``).
 """
 
 from __future__ import annotations

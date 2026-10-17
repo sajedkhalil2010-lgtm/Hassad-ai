@@ -29,7 +29,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.api.v1 import agronomist, auth, chatbot, crop_doctor, sync
+from app.api.v1 import agronomist, analyze, auth, chatbot, crop_doctor, sync
 from app.core.config import get_settings
 from app.core.database import (
     check_db_health,
@@ -39,8 +39,17 @@ from app.core.database import (
 )
 from app.core.security import hash_password
 from app.models.user import User, UserRole
-from app.agents import KeyPoolManager
 from app.agents.knowledge import seed_knowledge_base
+
+
+def _opencv_version() -> str:
+    """OpenCV version for health/logs (import guarded for exotic builds)."""
+    try:
+        import cv2
+
+        return str(cv2.__version__)
+    except Exception:  # noqa: BLE001 - reporting only
+        return "unavailable"
 
 logger = logging.getLogger("hassad")
 
@@ -177,17 +186,10 @@ async def lifespan(app: FastAPI):  # noqa: ANN201 - FastAPI lifespan
         format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
     )
     logger.info("Starting %s v%s (%s)", settings.APP_NAME, settings.APP_VERSION, settings.ENVIRONMENT)
-
-    if not settings.huggingface_configured:
-        logger.warning(
-            "HUGGINGFACE_API_KEY is not set — /crop-doctor/diagnose will answer 503. "
-            "Paste a free token into .env."
-        )
-    if not settings.gemini_configured:
-        logger.warning(
-            "GEMINI_API_KEY is not set — the chatbot will serve retrieval-only fallback "
-            "answers. Paste a free key into .env."
-        )
+    logger.info(
+        "Engine: 100%% local autonomy — OpenCV %s + NumPy vision, no external APIs",
+        _opencv_version(),
+    )
 
     await init_db()
     async with get_session_factory()() as db:
@@ -278,6 +280,7 @@ def create_app() -> FastAPI:
     prefix = settings.API_V1_PREFIX
     app.include_router(auth.router, prefix=prefix)
     app.include_router(crop_doctor.router, prefix=prefix)
+    app.include_router(analyze.router, prefix=prefix)
     app.include_router(chatbot.router, prefix=prefix)
     app.include_router(agronomist.router, prefix=prefix)
     app.include_router(sync.router, prefix=prefix)
@@ -315,19 +318,15 @@ def create_app() -> FastAPI:
             "environment": settings.ENVIRONMENT,
             "database": "ok" if db_ok else "unreachable",
             "ai": {
-                # Existence only — the key values are never returned.
-                "huggingface_key_configured": settings.huggingface_configured,
-                "gemini_key_configured": settings.gemini_configured,
-                "gemini_keys_configured": len(settings.gemini_api_keys),  # count, not material
-                "key_pool_size": KeyPoolManager.size(),  # v2 rotating pool (count only)
-                "pipeline": "supervisor_v3",  # pure agentic autonomy (zero raw APIs)
-                "autonomy": "agentic",  # hypothesis→self-verify→refine + coordination loop
+                "engine": "local_cv",  # OpenCV + NumPy quantitative vision
+                "opencv": _opencv_version(),
+                "pipeline": "supervisor_v4",  # 100% local multi-agent autonomy
+                "autonomy": "local_agentic",
                 "agents": ["diagnostic", "advisor", "supervisor"],
-                "vision_engine": "gemini" if settings.gemini_configured else "unconfigured",
-                "vision_live_only": True,  # no mock verdicts — failures answer 429/503
-                "vision_model": settings.vision_model_name,
-                "vision_timeout_s": settings.VISION_TIMEOUT_SECONDS,
-                "gemini_model": settings.GEMINI_MODEL_NAME,
+                "external_apis": 0,  # zero network calls in the AI path
+                "vision_live_only": True,  # no mock verdicts — real pixels only
+                "chat_mode": "local_kb",
+                "tebessa_kb": True,
             },
             "time": utcnow().isoformat(),
         }

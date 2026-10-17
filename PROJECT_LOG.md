@@ -1,4 +1,4 @@
-# حَصاد AI — Hassad AI v2/v3 · Project Log & Architecture Record
+# حَصاد AI — Hassad AI v2/v3/v4 · Project Log & Architecture Record
 
 > Living document: every architectural decision, agent file, and step of the
 > agentic refactor is recorded here for presentation and audit.
@@ -50,6 +50,58 @@ CognitionEngine (agents/cognition.py)   ← ONLY module importing google-genai
 KeyPoolManager (agents/key_manager.py)  ← key state: rotation on 429,
                                            quota memo, zero SDK retries
 ```
+
+## 1b. v4 — 100% local autonomy (current)
+
+**v4 replaces the remote cognition engine entirely.** The diagnosis
+pipeline now runs on **OpenCV + NumPy inside this process**: no
+external APIs, no API keys, no rate limits, no 429s. `cognition.py`
+and `key_manager.py` were **deleted**; `google-genai` was removed from
+`requirements.txt` (added `opencv-python`). An old `.env` carrying key
+templates is harmlessly ignored (`extra="ignore"`).
+
+```
+Client (untouched RTL Arabic SPA)
+   ▼
+FastAPI router — HTTP + persistence only (no AI code at all)
+   ▼
+SupervisorAgent — coordination loop over a policy table + blackboard
+   │   dispatch → evaluate → next dispatch (trace recorded)
+   ├─► DiagnosticAgent — segment → measure → match condition profiles
+   │       ▼
+   │   local_vision.py — OpenCV+NumPy leaf/lesion segmentation
+   │       • leaf mask (HSV vegetation + hole-fill + largest component;
+   │         canopy mode for green backgrounds/dense canopies)
+   │       • lesion classes: necrotic / water_soaked / chlorotic /
+   │         powdery / rust_ochre (morphology-cleaned, min-size filtered)
+   │       • SECOND independent segmentation in CIE-Lab (Otsu on the
+   │         distance from the healthy-green reference) → the reported
+   │         segmentation_dice_score = Dice(maskA, maskB): honest
+   │         inter-method agreement, not a fabricated accuracy
+   │       • metrics: affected_area_percentage, lesion_count,
+   │         largest_lesion_share, halo_index (early-blight signature),
+   │         border_necrosis_share (K-deficiency proxy), severity
+   │         (Early <5% ≤ Moderate ≤15% < Critical, settings-driven)
+   ├─► AdvisorAgent — Tébessa KB: bilingual (real AR+EN) treatments,
+   │       irrigation strategy (drip/deficit by crop group), seasonal
+   │       calendar, disclaimer referencing DPA Tébessa / Chambre
+   │       d'Agriculture; chat = pure local-KB retrieval (mode=local_kb)
+   ▼
+NO SDK, NO NETWORK — sub-second diagnosis, unlimited requests
+```
+
+Key properties kept from v3: the coordination loop, the `RunTrace`
+blackboard (`model_meta.trace`), the threshold policy, the two-stage
+crop flow, the wire contract, live-only honesty (measured pixels — no
+mock verdicts), English-first formatting. New in v4: proper bilingual
+KB rows (real Arabic, not mirrored English), a quantitative block in
+the report, `POST /api/v1/analyze` (stateless quantitative report with
+the Tébessa advisory + trace), crop vocab extended with the Tébessa
+staples `olive`/`almond`, and chat answers in ~0.1 s (was 20–30 s via
+the free-tier API).
+
+> Sections 2–6 below describe the retired v2/v3 remote stack and are
+> kept as history; v4 content lives in section 1b and the progress log.
 
 
 ## 2. The three agents
@@ -141,3 +193,10 @@ by the agent framework.
 | 17 | 2026-10-17 | **SupervisorAgent → coordination loop**: builds the stage plan from inputs (`auto` vs `user-crop`), dispatches stage by stage, evaluates each result against the threshold policy, decides continuation/early-exit, and ships the full trail as `model_meta.trace`. Pipeline id `supervisor_v3`; `/health` adds `autonomy: "agentic"`. Wire-contract parity preserved: `vision{crop,disease,model,latency_ms}`, `alternatives` only on stage-2, `disease: null` on awaiting reports, `source: "model"`. |
 | 18 | 2026-10-17 | **Validation** — offline v3 suite **21/21** (zero-SDK invariant scan proving `google.genai` lives only in `cognition.py`; pool rotation A→429→B; memo; self-verify trace; bounded refine wins; critique-failure recovery; awaiting early-report with null disease; chat streaming + retrieval fallback; spent-pool instant quota failure with `new_calls=0`); **15/15 compile**; **E2E 42/42 LIVE** — quota reset overnight so both uploads got real, distinct Gemini verdicts (`Septoria Leaf Spot` 0.85 via the two-stage flow, `Early Blight` 0.85 on the alt upload), live SSE chat streams, 45 s budget honored (33.2 s), quality gate/sync/agronomist/auth intact; `git status frontend/` empty (frontend untouched); server log clean. |
 | 19 | 2026-10-17 | v3 committed and pushed to `main` (`.env` exclusion re-verified before commit: only the clean `.env.example` staged/ignored). |
+| 20 | 2026-10-17 | **v4 — 100% local autonomy** decision recorded (section 1b): the user required a fully local system (zero external API dependencies, zero rate limits) tailored to Tébessa. Gemini/cognition/key-pool removed; OpenCV + NumPy becomes the vision engine; the Tébessa KB becomes the advisory source. |
+| 21 | 2026-10-17 | **`agents/local_vision.py`** — quantitative segmentation engine: HSV vegetation leaf mask (+ internal hole-fill so symptomatic non-green tissue stays inside the reference area, canopy mode), five lesion colour classes with morphological cleanup + min-size filtering, an independent CIE-Lab second segmentation → `segmentation_dice_score` = inter-method Dice consensus, metrics (affected %, lesion count, largest-lesion share, halo index, border-necrosis share, severity from `SEVERITY_*` settings), CPU work off the loop (`asyncio.to_thread`). Deterministic: same image → identical metrics (tested). |
+| 22 | 2026-10-17 | **DiagnosticAgent rewritten (local)** — measures via `local_vision`, scores 8 Tébessa-relevant condition profiles (early/late blight, septoria, rust, powdery mildew, N/K deficiency, healthy) over the measured feature vector, crop-mismatch penalty (not veto), confidence = fit × Dice consensus × ambiguity margin; emits bilingual measured symptoms, a `quantitative` block, `engine: local_cv`; auto path ships regional-prior crop candidates (wheat/barley/olive @ 0.35 — the local engine honestly never guesses species above the ask-threshold). |
+| 23 | 2026-10-17 | **AdvisorAgent rewritten (Tébessa KB)** — `build_plan` keyed by `condition_id`: treatments (cultural/organic/chemical with doses), severity boosters, irrigation row by crop group (cereal rain-fed / vegetable drip-morning / orchard RDI), real bilingual AR+EN rows, DPA Tébessa disclaimer, `source: local_kb:tebessa_v1`; `advisory_extras` (climate/soil/irrigation/seasonal calendar) for `/analyze`; chat = pure local-KB retrieval (`mode=local_kb`, no model call, no keys). Supervisor rewritten for the local engine (`pipeline: supervisor_v4`, `source: local_cv`, quantitative in report, honest "please confirm the crop" wording). `cognition.py` + `key_manager.py` **deleted**; `config.py` purged of all Gemini/HF settings (+ `CV_MAX_SIDE`, `SEVERITY_EARLY_MAX_PCT/MODERATE_MAX_PCT`); crop vocab gains `olive`/`almond`; `/health` reports `engine: local_cv, opencv, external_apis: 0`. |
+| 24 | 2026-10-17 | **New `POST /api/v1/analyze`** — stateless quantitative report (metrics + diagnosis + Tébessa advisory + agent trace), authenticated, nothing persisted; mounted alongside the untouched `/crop-doctor/*` routes. `requirements.txt`: `-google-genai`, `+opencv-python`. |
+| 25 | 2026-10-17 | **Validation** — offline v4 suite **47/47** (zero-SDK invariant scan: no `google.genai`/`KeyPoolManager`/`GEMINI_API_KEY` anywhere in `app/`; config purge checks; synthetic-image ground truth: lesions → 10.4% moderate, clean → 0.00% none, powdery/chlorotic fractions detected, determinism; diagnostic matching + honest confidences; Tébessa plan bilingual + disclaimer; supervisor contract incl. stage-1 honest awaiting); compile clean; **E2E 43/43 LIVE** — full flow now local: SSE chat `mode=local_kb` in 0.1 s (was 28 s), diagnose two-stage flow 1.3 s (Septoria Leaf Spot 0.69 on Wheat), `/analyze` quantitative report (10.6% / dice 0.694 / moderate) with Tébessa region block + 7-step trace, quality gate/sync/agronomist/auth intact; `git status frontend/` empty (frontend untouched); server log clean. |
+| 26 | 2026-10-17 | v4 committed and pushed to `main` (`.env` exclusion re-verified; v1/v2/v3 remain recoverable at `9931f0e`/`12e2e8d`/`a632323`). |
