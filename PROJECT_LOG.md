@@ -214,3 +214,36 @@ curl -X POST "http://127.0.0.1:8000/api/v1/analyze" -F "file=@leaf.jpg"
 | 8 | 2026-10-19 | `main.py` — FastAPI + CORS, `GET /health`, `POST /api/v1/analyze`, size/type guards, failure-kind → HTTP status mapping. |
 | 9 | 2026-10-19 | Validation suite written and run: **66/66 offline**, **63/63 SDK-shape**, live uvicorn smoke pass. Two real bugs caught and fixed (crash on `None` result data; JSON-array parser leniency). Zero network calls, zero quota. |
 | 10 | 2026-10-19 | `PROJECT_LOG.md` written; git initialized and initial commit created with `.env` verified excluded. |
+| 11 | 2026-10-19 | **Runtime verification with a live key.** The key in `.env` authenticates fine (the `AQ.` prefix is simply a newer Google key format — the earlier "suspicious format" suspicion was wrong). |
+| 12 | 2026-10-19 | **Critical runtime bug found:** `gemini-2.5-flash` is retired for new API users and returns `404 NOT_FOUND`. Every diagnose call would have failed. Default switched to **`gemini-3.8-flash`** (confirmed working), and `request_timeout_s` raised 60 s → **120 s** after a real vision pass measured 49-54 s. |
+| 13 | 2026-10-19 | **`main.py` refactored into `create_app(settings, supervisor)`** so tests inject isolated settings instead of reading the live `.env`. The offline suite had become non-hermetic (6 failures once a real key existed); it now builds its own `Settings(_env_file=None, ...)`. Suite grew 66 → **74** checks. |
+| 14 | 2026-10-19 | **`run.py` + `start.bat` launchers.** Pins `sys.path` to this folder and *verifies* `main`/`agents` resolve inside it, so sibling checkouts (other Hassad folders on the Desktop) can never be imported. Reports key state (masked), probes for a free port from 8000 up, waits on `/health`, prints the exact URLs. |
+| 15 | 2026-10-19 | **Port-probe bug fixed:** the first `pick_port` used `SO_REUSEADDR`, which on Windows means "allow binding over an existing listener", so a busy port was reported free. Now binds with `SO_EXCLUSIVEADDRUSE`, which fails outright when anything holds the port; added `port_owner()` to name the occupant via netstat/tasklist. |
+| 16 | 2026-10-19 | **Live end-to-end pass:** `GET /health` 200 (`gemini-3.8-flash`, `configured: true`, key masked, no leak); `POST /api/v1/analyze` 200 with a fully populated diagnosis + Gemini advisory, both stages `ok`. Correctly reported `confidence 0.05` / `is_leaf_image: false` on a synthetic test image — honest low confidence rather than fabricated certainty. |
+| 17 | 2026-10-19 | **Legacy conflict identified:** a stale `python -m uvicorn main:app` (PID from `dotenv run`, the *other* project's launcher) has been holding **port 8000**, serving the retired `supervisor_v4`/`local_cv` app. The new launcher detects it, names it, and falls back to 8001. This is exactly the legacy-code interference the project must avoid. |
+
+## 7. Launching
+
+```bash
+cd "C:\Users\user\Desktop\حصاد v1"
+
+# one click (double-click start.bat), or:
+python run.py                 # port 8000, opens browser
+python run.py --no-open       # port 8000, no browser
+python run.py --port 8010     # pick a specific port
+python run.py --open-docs     # open /docs instead of /health
+
+# manual equivalent
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+`run.py` prints the exact URLs on startup:
+
+```
+  Health check : http://127.0.0.1:8000/health
+  API docs     : http://127.0.0.1:8000/docs
+  Analyze POST : http://127.0.0.1:8000/api/v1/analyze
+```
+
+If port 8000 is occupied it reports the occupying PID and auto-selects the
+next free port, so the printed URL is always the one that actually works.

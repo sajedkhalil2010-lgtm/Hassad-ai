@@ -60,16 +60,30 @@ class FakeAdvisor:
 
 
 def main() -> int:
-    from agents import AdvisorAgent, AgentError, DiagnosticAgent, SupervisorAgent, get_settings
+    from agents import AdvisorAgent, AgentError, DiagnosticAgent, SupervisorAgent, Settings
     from agents.base import AgentResult, as_severity, clamp01, normalise_image_bytes, parse_model_json, sniff_image_mime
     from agents.config import PLACEHOLDER_KEY
 
+    # Hermetic by design: build isolated settings explicitly so the suite
+    # never depends on the live `.env` and never spends real quota.
+    settings = Settings(_env_file=None, gemini_api_key=None)
+    keyed = Settings(_env_file=None, gemini_api_key="AIzaFakeSuiteKey1234567890abcdef")
+
     print("\n=== 1. Configuration / single-key hygiene ===")
-    settings = get_settings()
-    check("placeholder .env key is rejected", settings.is_configured is False)
+    check("placeholder key rejected", settings.is_configured is False)
     check("masked_key does not leak value", PLACEHOLDER_KEY not in settings.masked_key)
     check("api_key returns None when unconfigured", settings.api_key is None)
     check("repr hides the secret", "your_single" not in repr(settings.gemini_api_key))
+    check("placeholder string is treated as None",
+          Settings(_env_file=None, gemini_api_key=PLACEHOLDER_KEY).is_configured is False)
+    check("blank key is treated as None", Settings(_env_file=None, gemini_api_key="   ").is_configured is False)
+    check("real key is accepted", keyed.is_configured is True)
+    check("real key api_key round-trips", keyed.api_key == "AIzaFakeSuiteKey1234567890abcdef")
+    check("real key masked to 4+4", keyed.masked_key == "AIza...cdef", f"got {keyed.masked_key}")
+    check("real key hidden from repr", "AIzaFakeSuiteKey" not in repr(keyed.gemini_api_key))
+    check("default model is a current flash model",
+          Settings(_env_file=None).gemini_model == "gemini-3.8-flash")
+    check("timeout gives real headroom", Settings(_env_file=None).request_timeout_s >= 120.0)
 
     print("\n=== 2. base.py helpers ===")
     check("clamp01 clamps high", clamp01(5) == 1.0)
@@ -195,9 +209,12 @@ def main() -> int:
     print("\n=== 7. FastAPI app + endpoints ===")
     from fastapi.testclient import TestClient
 
-    import main as main_module
+    from main import create_app
 
-    client = TestClient(main_module.app)
+    # Build an app with ISOLATED settings so the suite never depends on the
+    # live `.env` and never spends real quota.
+    isolated = Settings(_env_file=None, gemini_api_key=None)
+    client = TestClient(create_app(isolated))
 
     resp = client.get("/health")
     check("GET /health -> 200", resp.status_code == 200, f"got {resp.status_code}")

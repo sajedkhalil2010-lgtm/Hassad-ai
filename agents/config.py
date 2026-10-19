@@ -39,10 +39,14 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
 
     # --- model behaviour ---------------------------------------------------
-    gemini_model: str = "gemini-2.5-flash"
+    # NOTE: `gemini-2.5-flash` was retired for new API users and now returns
+    # 404 NOT_FOUND. `gemini-3.8-flash` is the current recommended flash model.
+    gemini_model: str = "gemini-3.8-flash"
     gemini_temperature: float = 0.2
     gemini_max_output_tokens: int = 4096
-    request_timeout_s: float = 60.0
+    #: Live vision passes measured ~45-50 s; keep generous headroom so real
+    #: leaf photos do not trip the client timeout.
+    request_timeout_s: float = 120.0
 
     # --- input limits ------------------------------------------------------
     max_image_bytes: int = 8 * 1024 * 1024
