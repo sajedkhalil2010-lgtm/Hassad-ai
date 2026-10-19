@@ -9,8 +9,12 @@ from __future__ import annotations
 import io
 import json
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
+
+T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
 # Error contract
@@ -18,6 +22,13 @@ from typing import Any
 
 #: Failure kinds the HTTP layer knows how to translate into status codes.
 FAILURE_KINDS = frozenset({"auth", "quota", "busy", "upstream", "input", "api"})
+
+
+#: Friendly Arabic message shown to the farmer when the Gemini quota is spent.
+#: The frontend renders ``error.message`` directly, so this is what the user
+#: actually sees; an English twin is kept alongside for logs and debugging.
+QUOTA_MESSAGE_AR = "تم استهلاك حد الطلبات المؤقت لـ Gemini، يرجى الانتظار بضع ثوانٍ ثم المحاولة مجدداً"
+QUOTA_MESSAGE_EN = "Gemini API quota exceeded. Please retry in a few seconds."
 
 
 class AgentError(Exception):
@@ -34,6 +45,7 @@ class AgentError(Exception):
         *,
         retryable: bool = False,
         detail: str | None = None,
+        message_en: str | None = None,
     ) -> None:
         super().__init__(message)
         if kind not in FAILURE_KINDS:  # defensive: keep the contract tight
@@ -42,15 +54,73 @@ class AgentError(Exception):
         self.message = message
         self.retryable = retryable
         self.detail = detail
+        #: English twin of ``message`` when ``message`` is localized.
+        self.message_en = message_en
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"AgentError(kind={self.kind!r}, retryable={self.retryable!r}, message={self.message!r})"
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"kind": self.kind, "message": self.message, "retryable": self.retryable}
+        if self.message_en:
+            payload["message_en"] = self.message_en
         if self.detail:
             payload["detail"] = self.detail
         return payload
+
+
+# ---------------------------------------------------------------------------
+# Quota (HTTP 429) handling
+# ---------------------------------------------------------------------------
+
+
+def is_quota_error(exc: BaseException) -> bool:
+    """Detect a Gemini 429 / RESOURCE_EXHAUGHTED without importing the SDK.
+
+    Matches on the numeric ``code`` attribute the SDK attaches, plus the
+    status string, so it stays duck-typed and ``base.py`` keeps its
+    zero-SDK-import property.
+    """
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+    status = str(getattr(exc, "status", "") or "")
+    if "RESOURCE_EXHAUSTED" in status.upper():
+        return True
+    return "RESOURCE_EXHAUSTED" in str(exc).upper()
+
+
+def run_with_quota_retry(
+    call: Callable[[], T],
+    *,
+    attempts: int = 3,
+    base_delay_s: float = 2.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Run ``call``, retrying only on quota (429) errors with backoff.
+
+    Delays are exponential from ``base_delay_s`` (2s, 4s, ...) and are kept
+    short on purpose: a full analysis already takes tens of seconds, so a
+    long backoff would just make the farmer wait for a failure.
+
+    Non-quota errors are re-raised immediately — never retry a bad request
+    or an invalid key, since that only burns more quota.
+
+    ``sleep`` is injectable so tests can assert the schedule without waiting.
+    """
+    if attempts < 1:
+        attempts = 1
+
+    for attempt in range(attempts):
+        try:
+            return call()
+        except Exception as exc:
+            last_attempt = attempt == attempts - 1
+            if last_attempt or not is_quota_error(exc):
+                raise
+            sleep(base_delay_s * (2 ** attempt))
+
+    raise RuntimeError("unreachable: retry loop exhausted")  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
@@ -285,13 +355,17 @@ __all__ = [
     "AgentError",
     "AgentResult",
     "FAILURE_KINDS",
+    "QUOTA_MESSAGE_AR",
+    "QUOTA_MESSAGE_EN",
     "SUPPORTED_MIME_TYPES",
     "as_dict",
     "as_severity",
     "as_str",
     "as_str_list",
     "clamp01",
+    "is_quota_error",
     "normalise_image_bytes",
     "parse_model_json",
+    "run_with_quota_retry",
     "sniff_image_mime",
 ]

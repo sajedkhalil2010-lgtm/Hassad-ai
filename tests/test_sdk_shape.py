@@ -59,7 +59,9 @@ def main():
     settings_cls = None
     from agents.config import Settings
 
-    cfg = Settings(_env_file=None, gemini_api_key="AIzaFakeKeyForShapeTest1234567890")
+    # quota_retry_base_delay_s=0 keeps the 429 cases instant; retry COUNT is
+    # exercised separately in test_quota_retry.py with an injected sleeper.
+    cfg = Settings(_env_file=None, gemini_api_key="AIzaFakeKeyForShapeTest1234567890", quota_retry_base_delay_s=0.0)
 
     print("\n=== A. DiagnosticAgent calls the SDK correctly ===")
     good = ('{"is_leaf_image": true, "crop": "Tomato", "disease": "Early blight", '
@@ -129,6 +131,24 @@ def main():
         if r3.ok is False:
             check(f"HTTP {code} retryable={expected_retry}", r3.error.retryable is expected_retry)
             check(f"HTTP {code} never leaks key", "AIzaFake" not in (r3.error.message + str(r3.error.detail)))
+
+    print("\n=== C2. HTTP 429 returns the friendly Arabic message ===")
+    exc429 = genai_errors.APIError(429, {"error": {"message": "RESOURCE_EXHAUSTED", "status": "RESOURCE_EXHAUSTED"}})
+    r429 = diag_mod.DiagnosticAgent(cfg, client=RecordingClient(raise_exc=exc429)).analyze(make_png())
+    check("429 kind is quota", r429.ok is False and r429.error.kind == "quota")
+    check("429 message is Arabic", "تم استهلاك حد الطلبات المؤقت" in r429.error.message,
+          f"got {r429.error.message!r}")
+    check("429 message_en twin present", r429.error.to_dict().get("message_en") is not None)
+
+    # ...and the same text must survive through the supervisor -> HTTP report.
+    from agents.supervisor_agent import SupervisorAgent
+    sup = SupervisorAgent(cfg, diagnostic=diag_mod.DiagnosticAgent(cfg, client=RecordingClient(raise_exc=exc429)),
+                          advisor=adv_mod.AdvisorAgent(cfg, client=RecordingClient()))
+    rep429 = sup.run(make_png())
+    check("supervisor 429 -> ok=false", rep429.get("ok") is False)
+    check("supervisor 429 report carries Arabic message",
+          "تم استهلاك حد الطلبات المؤقت" in str((rep429.get("error") or {}).get("message", "")),
+          f"got {(rep429.get('error') or {}).get('message')!r}")
 
     print("\n=== D. Non-APIError (timeout/network) -> busy ===")
     c4 = RecordingClient(raise_exc=TimeoutError("timed out"))

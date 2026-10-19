@@ -15,7 +15,20 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from .base import AgentError, AgentResult, as_dict, as_severity, as_str, as_str_list, clamp01, normalise_image_bytes, parse_model_json
+from .base import (
+    QUOTA_MESSAGE_AR,
+    QUOTA_MESSAGE_EN,
+    AgentError,
+    AgentResult,
+    as_dict,
+    as_severity,
+    as_str,
+    as_str_list,
+    clamp01,
+    normalise_image_bytes,
+    parse_model_json,
+    run_with_quota_retry,
+)
 from .config import Settings, get_settings
 
 #: Structured-output contract handed to the model. Keeping it inline (rather
@@ -99,8 +112,13 @@ class DiagnosticAgent:
 
         if code in (401, 403):
             return AgentError("auth", "Gemini rejected the API key (invalid or forbidden).", retryable=False)
-        if code == 429:
-            return AgentError("quota", "Gemini API quota exceeded. Please retry later.", retryable=True)
+        if code == 429 or "RESOURCE_EXHAUSTED" in str(getattr(exc, "status", "") or "").upper():
+            return AgentError(
+                "quota",
+                QUOTA_MESSAGE_AR,
+                retryable=True,
+                message_en=QUOTA_MESSAGE_EN,
+            )
         if code in (408, 500, 502, 503, 504):
             return AgentError("busy", "Gemini service is temporarily unavailable.", retryable=True)
         if code == 400:
@@ -123,8 +141,8 @@ class DiagnosticAgent:
         except AgentError as exc:
             return AgentResult.failure(exc)
 
-        try:
-            response = client.models.generate_content(
+        def _generate() -> Any:
+            return client.models.generate_content(
                 model=self.settings.gemini_model,
                 contents=[
                     types.Part.from_bytes(data=payload, mime_type=mime),
@@ -136,6 +154,13 @@ class DiagnosticAgent:
                     response_mime_type="application/json",
                     top_p=0.95,
                 ),
+            )
+
+        try:
+            response = run_with_quota_retry(
+                _generate,
+                attempts=self.settings.quota_retry_attempts,
+                base_delay_s=self.settings.quota_retry_base_delay_s,
             )
         except genai_errors.APIError as exc:
             return AgentResult.failure(self._classify_sdk_error(exc))

@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     #: leaf photos do not trip the client timeout.
     request_timeout_s: float = 120.0
 
+    # --- quota (HTTP 429) retry -------------------------------------------
+    #: Total attempts on a 429, including the first one.
+    quota_retry_attempts: int = 3
+    #: First backoff delay; doubles each retry (2s, 4s, ...).
+    quota_retry_base_delay_s: float = 2.0
+
     # --- input limits ------------------------------------------------------
     max_image_bytes: int = 8 * 1024 * 1024
     max_image_side: int = 1600

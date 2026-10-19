@@ -21,7 +21,17 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from .base import AgentError, AgentResult, as_dict, as_str, as_str_list, parse_model_json
+from .base import (
+    QUOTA_MESSAGE_AR,
+    QUOTA_MESSAGE_EN,
+    AgentError,
+    AgentResult,
+    as_dict,
+    as_str,
+    as_str_list,
+    parse_model_json,
+    run_with_quota_retry,
+)
 from .config import Settings, get_settings
 
 REGION = "Tébessa, Algeria"
@@ -225,8 +235,13 @@ class AdvisorAgent:
         code = getattr(exc, "code", None)
         if code in (401, 403):
             return AgentError("auth", "Gemini rejected the API key.", retryable=False)
-        if code == 429:
-            return AgentError("quota", "Gemini API quota exceeded.", retryable=True)
+        if code == 429 or "RESOURCE_EXHAUSTED" in str(getattr(exc, "status", "") or "").upper():
+            return AgentError(
+                "quota",
+                QUOTA_MESSAGE_AR,
+                retryable=True,
+                message_en=QUOTA_MESSAGE_EN,
+            )
         if code in (408, 500, 502, 503, 504):
             return AgentError("busy", "Gemini service temporarily unavailable.", retryable=True)
         return AgentError("api", f"Gemini advisory call failed ({code}).", retryable=True)
@@ -248,8 +263,8 @@ class AdvisorAgent:
             client = None
 
         if client is not None:
-            try:
-                raw = client.models.generate_content(
+            def _generate() -> Any:
+                return client.models.generate_content(
                     model=self.settings.gemini_model,
                     contents=[self._build_prompt(diagnosis)],
                     config=types.GenerateContentConfig(
@@ -257,6 +272,13 @@ class AdvisorAgent:
                         max_output_tokens=self.settings.gemini_max_output_tokens,
                         response_mime_type="application/json",
                     ),
+                )
+
+            try:
+                raw = run_with_quota_retry(
+                    _generate,
+                    attempts=self.settings.quota_retry_attempts,
+                    base_delay_s=self.settings.quota_retry_base_delay_s,
                 )
                 remote = parse_model_json(getattr(raw, "text", None))
             except genai_errors.APIError as exc:
@@ -278,8 +300,12 @@ class AdvisorAgent:
             merged = self._kb_plan(kb_entry, diagnosis)
             source = "local_kb"
         else:
-            kind = remote_error.kind if remote_error else "api"
-            return AgentResult.failure(AgentError(kind, "No advisory source available.", retryable=True))
+            # No plan available. Surface the *actual* classified failure
+            # (e.g. the Arabic quota message) rather than a generic string —
+            # the farmer needs to know why, and `retryable` must stay accurate.
+            if remote_error is not None:
+                return AgentResult.failure(remote_error)
+            return AgentResult.failure(AgentError("api", "No advisory source available.", retryable=True))
 
         merged["meta"] = {
             "agent": self.name,

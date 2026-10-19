@@ -72,6 +72,8 @@ class SupervisorAgent:
             # "no plan" marker beats suppressing the whole report.
             adv_error = advisory_result.error or AgentError("api", "Advisory stage failed.")
             advisory = {"unavailable": True, "reason": adv_error.message, "kind": adv_error.kind}
+            if adv_error.message_en:
+                advisory["reason_en"] = adv_error.message_en
 
         total_ms = int((time.perf_counter() - started) * 1000)
 
