@@ -280,6 +280,7 @@ def main() -> int:
     docs_url = f"{base_url}/docs" if args.open_docs else base_url
     print("\n" + "-" * 62)
     print("  Backend is UP. Open one of these:")
+    print(f"    Test UI      : {base_url}/")
     print(f"    Health check : {base_url}/health")
     print(f"    API docs     : {base_url}/docs")
     print(f"    Analyze POST : {base_url}/api/v1/analyze")

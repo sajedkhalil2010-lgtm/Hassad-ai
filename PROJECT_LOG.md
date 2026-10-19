@@ -220,7 +220,10 @@ curl -X POST "http://127.0.0.1:8000/api/v1/analyze" -F "file=@leaf.jpg"
 | 14 | 2026-10-19 | **`run.py` + `start.bat` launchers.** Pins `sys.path` to this folder and *verifies* `main`/`agents` resolve inside it, so sibling checkouts (other Hassad folders on the Desktop) can never be imported. Reports key state (masked), probes for a free port from 8000 up, waits on `/health`, prints the exact URLs. |
 | 15 | 2026-10-19 | **Port-probe bug fixed:** the first `pick_port` used `SO_REUSEADDR`, which on Windows means "allow binding over an existing listener", so a busy port was reported free. Now binds with `SO_EXCLUSIVEADDRUSE`, which fails outright when anything holds the port; added `port_owner()` to name the occupant via netstat/tasklist. |
 | 16 | 2026-10-19 | **Live end-to-end pass:** `GET /health` 200 (`gemini-3.8-flash`, `configured: true`, key masked, no leak); `POST /api/v1/analyze` 200 with a fully populated diagnosis + Gemini advisory, both stages `ok`. Correctly reported `confidence 0.05` / `is_leaf_image: false` on a synthetic test image — honest low confidence rather than fabricated certainty. |
-| 17 | 2026-10-19 | **Legacy conflict identified:** a stale `python -m uvicorn main:app` (PID from `dotenv run`, the *other* project's launcher) has been holding **port 8000**, serving the retired `supervisor_v4`/`local_cv` app. The new launcher detects it, names it, and falls back to 8001. This is exactly the legacy-code interference the project must avoid. |
+| 17 | 2026-10-19 | **Legacy conflict identified:** a stale `python -m uvicorn main:app` (PID from `dotenv run`, the *other* project's launcher) has been holding **port 8000**, serving the retired `supervisor_v4`/`local_cv` app. The new launcher detects it, names it, and falls back to 8001. This is exactly the legacy-code interference the project must avoid. Stopped on the user's instruction so this project owns port 8000. |
+| 18 | 2026-10-19 | **Lightweight test UI** — `static/index.html`, a single self-contained file (no CDN, no framework, ~8.6 KB). File input with live preview, Analyze button, elapsed-time ticker, summary tiles, and three collapsible JSON panes (diagnostic / advisor / supervisor). Served at `/` via `FileResponse`, path resolved from `__file__` so it loads regardless of the caller's cwd. Root is excluded from the OpenAPI schema. |
+| 19 | 2026-10-19 | **UI notes:** fetch timeout set to 240 s (a live run is 28–70 s); `?api=` query param lets the page target another origin; non-200 responses still render the raw body for inspection rather than hiding it; the DOM is built with `textContent` only, so model-generated Arabic text can never inject markup. |
+| 20 | 2026-10-19 | **Test coverage:** `tests/test_ui.py` (**19 checks** — route, content-type, required controls, other endpoints unaffected, upload guards still rejecting) plus `tests/test_e2e.py` (live end-to-end through the exact request the UI issues: real Gemini call → `Early blight` / اللفحة المبكرة + Tébessa advisory in 28.7 s, both stages `ok`, no key leaked). Suite total **156**. |
 
 ## 7. Launching
 
@@ -240,10 +243,15 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000
 `run.py` prints the exact URLs on startup:
 
 ```
-  Health check : http://127.0.0.1:8000/health
-  API docs     : http://127.0.0.1:8000/docs
-  Analyze POST : http://127.0.0.1:8000/api/v1/analyze
+  Test UI     : http://127.0.0.1:8000/          (open this one)
+  Health check: http://127.0.0.1:8000/health
+  API docs    : http://127.0.0.1:8000/docs
+  Analyze POST: http://127.0.0.1:8000/api/v1/analyze
 ```
+
+Opening `http://127.0.0.1:8000` loads the lightweight single-file test UI
+(`static/index.html`): pick a leaf image, press **Analyze**, and read the
+diagnosis, the Tébessa advisory and the full supervisor JSON.
 
 If port 8000 is occupied it reports the occupying PID and auto-selects the
 next free port, so the printed URL is always the one that actually works.

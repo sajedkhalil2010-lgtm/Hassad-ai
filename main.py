@@ -2,8 +2,9 @@
 
 Exposes::
 
-    GET  /health           system verification (never leaks the key)
-    POST /api/v1/analyze   upload a leaf image -> full supervisor report
+    GET  /                  lightweight single-file test UI
+    GET  /health            system verification (never leaks the key)
+    POST /api/v1/analyze    upload a leaf image -> full supervisor report
 
 Run from the project root::
 
@@ -13,13 +14,19 @@ Run from the project root::
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from agents import AgentError, SupervisorAgent, Settings, get_settings
+
+#: Resolved from THIS file, not the cwd, so the page loads even when uvicorn
+#: is started from a different working directory.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+INDEX_HTML = STATIC_DIR / "index.html"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -64,6 +71,13 @@ def create_app(settings: Settings | None = None, supervisor: SupervisorAgent | N
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    @app.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        """Serve the lightweight single-file test UI."""
+        if not INDEX_HTML.is_file():
+            raise HTTPException(status_code=404, detail="Test UI not found (static/index.html).")
+        return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
 
     @app.get("/health", tags=["system"])
     def health() -> dict[str, Any]:
