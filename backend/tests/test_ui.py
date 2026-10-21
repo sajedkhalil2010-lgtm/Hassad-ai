@@ -1,4 +1,9 @@
-"""Smoke test for the lightweight test UI served at '/'."""
+"""Smoke test for the dashboard UI served at '/'.
+
+Covers three separate things, because they fail for different reasons:
+the page markup, the static assets and their routing, and the design system
+itself (so a palette or typeface change is caught rather than shipped).
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,22 @@ import sys
 
 PASS = 0
 FAIL = 0
+
+#: ES modules the page loads. app.js is the entry; it imports the rest.
+MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js", "app.js")
+
+#: Markers of a Google *identity* integration. Deliberately not the bare word
+#: "google": the typefaces are served from fonts.googleapis.com, which is a
+#: font CDN and not a sign-in flow. Asserting on "google" would conflate the
+#: two, which is exactly how a real sign-in could sneak back in unnoticed.
+GOOGLE_SIGNIN_MARKERS = (
+    "accounts.google.com",
+    "gapi",
+    "gsi/client",
+    "oneTap",
+    "google_auth",
+    "id_token",
+)
 
 
 def check(name, cond, extra=""):
@@ -47,10 +68,30 @@ def main() -> int:
     check("links the script", "/assets/js/app.js" in html)
     check("stylesheet kept out of the document", "<style" not in html)
     check("script kept out of the document", "<script>" not in html)
+    check("entry is an ES module, not a classic script", 'type="module"' in html)
     check("no external CDN/dependencies", "http://" not in html.replace("http://127.0.0.1", "")
           and "https://cdn" not in html and "//cdn" not in html)
 
+    print("\n=== Workspace structure ===")
+    check("has drag-and-drop zone", 'id="dropzone"' in html)
+    check("has local preview image", 'id="preview"' in html)
+    check("has image-clear control", 'id="clear-image"' in html)
+    check("has results grid", 'id="summary"' in html)
+    check("has symptoms list", 'id="symptoms"' in html)
+    check("has guidance container", 'id="advisory-body"' in html)
+    check("raw payloads are behind a disclosure", "<details" in html and "<summary>Raw responses</summary>" in html)
+
+    print("\n=== Assistant panel ===")
+    check("has message log", 'id="messages"' in html)
+    check("has composer", 'id="chat-form"' in html)
+    check("has message input", 'id="chat-input"' in html)
+    check("has send button", 'id="chat-send"' in html)
+    check("has suggestion chips region", 'id="suggestions"' in html)
+    check("has clear-conversation control", 'id="chat-reset"' in html)
+    check("log is an aria-live region", 'role="log"' in html)
+
     print("\n=== Account panel ===")
+    check("has account dialog", 'id="auth-modal"' in html)
     check("has account card", 'id="auth-card"' in html)
     check("has email input", 'id="auth-email"' in html)
     check("has password input", 'id="auth-password"' in html)
@@ -61,40 +102,81 @@ def main() -> int:
     check("has sign-out button", 'id="auth-logout"' in html)
     check("has status region", 'id="auth-status"' in html)
     lowered = html.lower()
-    check("no Google sign-in button (deliberately removed)",
-          "google" not in lowered and "gapi" not in lowered, "google/gapi found in html")
+    leaked = [m for m in GOOGLE_SIGNIN_MARKERS if m.lower() in lowered]
+    check("no Google sign-in integration", not leaked, f"found {leaked}")
     check("passwords are not auto-submitted insecurely", 'autocomplete="current-password"' in html)
 
-    print("\n=== Split assets under /assets ===")
+    print("\n=== Typefaces ===")
+    # Requested faces, loaded as progressive enhancement: display=swap means
+    # text paints immediately in the fallback stack, so a slow or absent
+    # connection costs the typeface and nothing else.
+    check("requests Tajawal", "Tajawal" in html)
+    check("requests Plus Jakarta Sans", "Plus+Jakarta+Sans" in html)
+    check("font stylesheet uses display=swap", "display=swap" in html)
+    check("preconnects to the font host", 'rel="preconnect"' in html)
+    # The document must still be fully readable if those two links never load.
+    check("html declares a fallback font stack", "font-family" in client.get("/assets/css/styles.css").text)
+
+    print("\n=== Design system (css) ===")
     css = client.get("/assets/css/styles.css")
     check("GET /assets/css/styles.css -> 200", css.status_code == 200, f"got {css.status_code}")
     check("stylesheet is text/css", "text/css" in css.headers.get("content-type", ""))
-    check("stylesheet non-empty", len(css.text) > 500, f"{len(css.text)} chars")
+    check("stylesheet non-empty", len(css.text) > 2000, f"{len(css.text)} chars")
+    for token, label in (
+        ("#0f766e", "teal accent"),
+        ("#047857", "emerald accent"),
+        ("#f8fafc", "off-white background"),
+        ("#1e293b", "charcoal text"),
+    ):
+        check(f"palette includes {label} ({token})", token in css.text)
+    check("defines Tajawal for Arabic", "Tajawal" in css.text)
+    check("defines Plus Jakarta Sans for Latin", "Plus Jakarta Sans" in css.text)
+    check("ships a dark theme", "prefers-color-scheme: dark" in css.text)
+    check("honours reduced motion", "prefers-reduced-motion: reduce" in css.text)
+    check("responds to narrow viewports", "@media (max-width" in css.text)
+    check("no CSS framework imported", "@import" not in css.text and "tailwind" not in css.text.lower())
 
-    js = client.get("/assets/js/app.js")
-    check("GET /assets/js/app.js -> 200", js.status_code == 200, f"got {js.status_code}")
-    check("script is javascript", "javascript" in js.headers.get("content-type", ""))
-    check("script posts to /api/v1/analyze", "/api/v1/analyze" in js.text)
-    check("script non-empty", len(js.text) > 500, f"{len(js.text)} chars")
+    print("\n=== Modules under /assets/js ===")
+    modules = {}
+    for name in MODULES:
+        res = client.get(f"/assets/js/{name}")
+        check(f"GET /assets/js/{name} -> 200", res.status_code == 200, f"got {res.status_code}")
+        check(f"{name} served as javascript",
+              "javascript" in res.headers.get("content-type", ""),
+              f"got {res.headers.get('content-type')}")
+        modules[name] = res.text
 
-    print("\n=== Account wiring in the script ===")
-    for endpoint in ("/api/register", "/api/login", "/api/logout", "/api/me"):
-        check(f"script calls {endpoint}", endpoint in js.text)
-    check("script persists the token", "localStorage" in js.text)
-    check("script sends the bearer token", "Authorization" in js.text)
-    check("script restores the session on load", "/api/me" in js.text and "restore" in js.text)
-    # `innerHTML` is used only to CLEAR a container (`= ""`). Asserting on the
-    # values rather than on absence is deliberate: it still passes if someone
-    # clears a div a different way, but fails the moment any user- or
-    # model-supplied text is rendered through it — an XSS hole.
-    assignments = re.findall(r"innerHTML\s*=\s*([^;]+)", js.text)
-    check("user text is rendered with textContent, never innerHTML",
-          bool(assignments) and all(a.strip() == '""' for a in assignments),
-          f"innerHTML assigned: {assignments}")
-    check("no Google endpoint in the script",
-          "google" not in js.text.lower() and "gapi" not in js.text.lower())
+    # Assertions about the app as a whole rather than one file: splitting into
+    # modules must not let a guarantee quietly evaporate into a file the test
+    # no longer reads.
+    agg = "\n".join(modules.values())
 
+    for endpoint in ("/api/v1/analyze", "/api/v1/chat",
+                     "/api/register", "/api/login", "/api/logout", "/api/me"):
+        check(f"modules call {endpoint}", endpoint in agg)
+
+    check("script persists the token", "localStorage" in agg)
+    check("script sends the bearer token", "Authorization" in agg)
+    check("script restores the session on load", "restoreSession" in agg)
+    check("script submits image as multipart", "FormData" in agg)
+    check("script keeps chat history", "history" in agg)
+    check("script passes diagnosis context to chat", "getContext" in agg)
+    check("no Google endpoint in the modules",
+          not [m for m in GOOGLE_SIGNIN_MARKERS if m.lower() in agg.lower()])
+
+    # `innerHTML` may only ever be assigned the empty string (clearing a
+    # container). Asserting on the values rather than on absence is
+    # deliberate: it still passes if someone clears a div a different way,
+    # but fails the moment any user- or model-supplied text is rendered
+    # through it — an XSS hole.
+    assignments = re.findall(r"innerHTML\s*=\s*([^;]+)", agg)
+    offenders = [a for a in assignments if a.strip() != '""']
+    check("no innerHTML assignment writes content", not offenders, f"innerHTML <- {offenders}")
+    check("dynamic text is rendered with textContent", "textContent" in agg)
+
+    print("\n=== Routing guards ===")
     check("unknown asset -> 404", client.get("/assets/nope.css").status_code == 404)
+    check("unknown module -> 404", client.get("/assets/js/nope.js").status_code == 404)
     check("traversal does not expose backend source",
           client.get("/assets/../main.py").status_code != 200)
 
