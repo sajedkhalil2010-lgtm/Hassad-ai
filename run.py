@@ -159,6 +159,7 @@ def check_models() -> tuple[bool, str]:
     wanted = (
         ("vision", settings.vision_model),
         ("advisor", settings.advisor_model),
+        ("chat", settings.chat_model),
     )
     missing = [f"{label} {mid}" for label, mid in wanted if mid not in available]
     if missing:

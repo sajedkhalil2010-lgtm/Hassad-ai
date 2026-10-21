@@ -60,6 +60,18 @@ VISION_MODEL_DEFAULT = "qwen/qwen3.8-27b"
 # surfaces as a clear message naming this field, not a silent retry loop.
 ADVISOR_MODEL_DEFAULT = "openai/gpt-oss-120b"
 
+# NOTE: the chat model was requested as `llama-3.3-70b-versatile`, but that id
+# is NOT servable — a live call on 2026-10-21 returned HTTP 404 ("does not
+# exist or you do not have access to it") and it is absent from
+# models.list(). Same retired id the advisor originally hit.
+# Chat is latency-sensitive — a farmer is sitting there typing — so the
+# default favours the fast gpt-oss-20b (~0.8s measured) over the heavier
+# gpt-oss-120b (~3.0s). Set CHAT_MODEL to `openai/gpt-oss-120b` in `.env` to
+# trade ~2s per turn for maximum reasoning quality. `NotFoundError` is
+# classified non-retryable, so a bad id fails immediately with a message
+# naming this field instead of hanging.
+CHAT_MODEL_DEFAULT = "openai/gpt-oss-20b"
+
 
 class Settings(BaseSettings):
     """Runtime settings. Env vars override `.env` values."""
@@ -79,6 +91,8 @@ class Settings(BaseSettings):
     vision_model: str = VISION_MODEL_DEFAULT
     #: Text reasoning (AdvisorAgent).
     advisor_model: str = ADVISOR_MODEL_DEFAULT
+    #: Interactive agronomist chat (ChatAgent).
+    chat_model: str = CHAT_MODEL_DEFAULT
     temperature: float = 0.2
     max_output_tokens: int = 4096
     #: Groq is fast, but keep generous headroom so real leaf photos never trip
@@ -94,6 +108,12 @@ class Settings(BaseSettings):
     # --- input limits ------------------------------------------------------
     max_image_bytes: int = 8 * 1024 * 1024
     max_image_side: int = 1600
+    #: Chat turn limits. These bound cost AND blunt prompt-injection via a
+    #: wall of pasted text; the server is the only thing that can enforce
+    #: them, so they live here rather than in the frontend.
+    max_chat_chars: int = 2000
+    #: How many prior turns are replayed to the model on each request.
+    max_chat_history: int = 12
 
     # --- advisor -----------------------------------------------------------
     #: When the API is unavailable, fall back to the embedded Tébessa KB.

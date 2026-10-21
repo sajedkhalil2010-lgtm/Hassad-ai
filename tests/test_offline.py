@@ -228,7 +228,7 @@ def main() -> int:
     body = resp.json()
     check("health reports not configured", body["configured"] is False)
     check("health never leaks the key", PLACEHOLDER_KEY not in json.dumps(body))
-    check("health lists agents", set(body["agents"]) == {"diagnostic", "advisor", "supervisor"})
+    check("health lists agents", set(body["agents"]) == {"diagnostic", "advisor", "chat", "supervisor"})
 
     resp = client.get("/nope")
     check("unknown route -> 404", resp.status_code == 404)
