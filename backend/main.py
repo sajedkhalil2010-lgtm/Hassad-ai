@@ -6,6 +6,15 @@ Exposes::
     GET  /health            system verification (never leaks the key)
     POST /api/v1/analyze    upload a leaf image -> full supervisor report
     POST /api/v1/chat       one conversational turn with the agronomist
+    POST /api/register      create an account, returns a session token
+    POST /api/login         verify credentials, returns a session token
+    POST /api/logout        revoke the calling token
+    GET  /api/me            who the calling token belongs to
+    GET  /api/admin/users   every registered account (admin only)
+
+Auth runs *alongside* the analysis endpoints rather than in front of them:
+``/api/v1/analyze`` and ``/api/v1/chat`` still work without a token. Enforcing
+a session there is a one-line dependency change once the UI is ready for it.
 
 Run from ``backend/`` (or use ``start_stable.bat`` from the project root)::
 
@@ -15,6 +24,7 @@ Run from ``backend/`` (or use ``start_stable.bat`` from the project root)::
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -26,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agents import AgentError, ChatAgent, SupervisorAgent, Settings, get_settings
+from auth import AuthStore, build_auth_router
 
 #: Resolved from THIS file, never the cwd: the frontend lives outside the
 #: backend package (one level up), so the page and its assets load no matter
@@ -99,21 +110,36 @@ def create_app(
     settings: Settings | None = None,
     supervisor: SupervisorAgent | None = None,
     chat_agent: ChatAgent | None = None,
+    auth_store: AuthStore | None = None,
 ) -> FastAPI:
     """Build the FastAPI application.
 
     An explicit factory (rather than module-level wiring) lets tests inject
     isolated settings so they never read the live `.env` or spend real quota.
+    ``auth_store`` exists for the same reason: a test must be able to point
+    auth at a throwaway SQLite file instead of the developer's real accounts.
     """
     settings = settings or get_settings()
     supervisor = supervisor or SupervisorAgent(settings)
     chat_agent = chat_agent or ChatAgent(settings)
+    auth_store = auth_store or AuthStore.from_settings(settings)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        # Deferred to startup rather than run inline here: constructing an
+        # app must not touch the filesystem, so that merely importing this
+        # module (as the test suite does) cannot create a database file.
+        auth_store.init_schema()
+        yield
 
     app = FastAPI(
         title="Hassad AI",
         description="Multi-agent crop-leaf diagnosis and localized advisory for Tébessa, Algeria.",
         version="1.0.0",
+        lifespan=lifespan,
     )
+
+    app.include_router(build_auth_router(auth_store, settings))
 
     app.add_middleware(
         CORSMiddleware,

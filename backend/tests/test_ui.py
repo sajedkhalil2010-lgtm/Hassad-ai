@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 PASS = 0
@@ -49,6 +50,21 @@ def main() -> int:
     check("no external CDN/dependencies", "http://" not in html.replace("http://127.0.0.1", "")
           and "https://cdn" not in html and "//cdn" not in html)
 
+    print("\n=== Account panel ===")
+    check("has account card", 'id="auth-card"' in html)
+    check("has email input", 'id="auth-email"' in html)
+    check("has password input", 'id="auth-password"' in html)
+    check("has sign-in tab", 'id="tab-login"' in html)
+    check("has register tab", 'id="tab-register"' in html)
+    check("has submit button", 'id="auth-submit"' in html)
+    check("has signed-in view", 'id="auth-signed-in"' in html)
+    check("has sign-out button", 'id="auth-logout"' in html)
+    check("has status region", 'id="auth-status"' in html)
+    lowered = html.lower()
+    check("no Google sign-in button (deliberately removed)",
+          "google" not in lowered and "gapi" not in lowered, "google/gapi found in html")
+    check("passwords are not auto-submitted insecurely", 'autocomplete="current-password"' in html)
+
     print("\n=== Split assets under /assets ===")
     css = client.get("/assets/css/styles.css")
     check("GET /assets/css/styles.css -> 200", css.status_code == 200, f"got {css.status_code}")
@@ -60,6 +76,23 @@ def main() -> int:
     check("script is javascript", "javascript" in js.headers.get("content-type", ""))
     check("script posts to /api/v1/analyze", "/api/v1/analyze" in js.text)
     check("script non-empty", len(js.text) > 500, f"{len(js.text)} chars")
+
+    print("\n=== Account wiring in the script ===")
+    for endpoint in ("/api/register", "/api/login", "/api/logout", "/api/me"):
+        check(f"script calls {endpoint}", endpoint in js.text)
+    check("script persists the token", "localStorage" in js.text)
+    check("script sends the bearer token", "Authorization" in js.text)
+    check("script restores the session on load", "/api/me" in js.text and "restore" in js.text)
+    # `innerHTML` is used only to CLEAR a container (`= ""`). Asserting on the
+    # values rather than on absence is deliberate: it still passes if someone
+    # clears a div a different way, but fails the moment any user- or
+    # model-supplied text is rendered through it — an XSS hole.
+    assignments = re.findall(r"innerHTML\s*=\s*([^;]+)", js.text)
+    check("user text is rendered with textContent, never innerHTML",
+          bool(assignments) and all(a.strip() == '""' for a in assignments),
+          f"innerHTML assigned: {assignments}")
+    check("no Google endpoint in the script",
+          "google" not in js.text.lower() and "gapi" not in js.text.lower())
 
     check("unknown asset -> 404", client.get("/assets/nope.css").status_code == 404)
     check("traversal does not expose backend source",

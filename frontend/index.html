@@ -16,6 +16,48 @@
   <p class="sub">Single-image end-to-end test against the local backend ·
      <a href="/docs">/docs</a> · <a href="/health">/health</a></p>
 
+  <div class="card" id="auth-card">
+    <label>Account</label>
+
+    <!-- Signed out: pick a mode, then submit. -->
+    <div id="auth-signed-out">
+      <div class="tabs" role="tablist">
+        <button type="button" id="tab-login" class="tab active" aria-selected="true">Sign in</button>
+        <button type="button" id="tab-register" class="tab" aria-selected="false">Create account</button>
+      </div>
+
+      <label for="auth-email">Email</label>
+      <input type="email" id="auth-email" autocomplete="email" placeholder="farmer@example.com">
+
+      <label for="auth-password">Password</label>
+      <input type="password" id="auth-password" autocomplete="current-password"
+             placeholder="At least 8 characters">
+
+      <div id="name-field" class="hidden">
+        <label for="auth-name">Name <span class="muted">(optional)</span></label>
+        <input type="text" id="auth-name" autocomplete="name" placeholder="Your name">
+      </div>
+
+      <button type="button" id="auth-submit">Sign in</button>
+      <div id="auth-status" role="status"></div>
+    </div>
+
+    <!-- Signed in: identity and sign-out. -->
+    <div id="auth-signed-in" class="hidden">
+      <div class="identity">
+        <div>
+          <div class="k">Signed in as</div>
+          <div class="v" id="auth-who">—</div>
+        </div>
+        <button type="button" id="auth-logout">Sign out</button>
+      </div>
+      <div id="auth-admin" class="hidden">
+        <button type="button" id="auth-admin-view" class="secondary">View registered users</button>
+      </div>
+      <pre id="admin-output" class="hidden"></pre>
+    </div>
+  </div>
+
   <div class="card">
     <label for="file">Leaf image</label>
     <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff">

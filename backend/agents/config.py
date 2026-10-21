@@ -39,6 +39,20 @@ PLACEHOLDER_MARKERS = (
     "xxxxxxxx",
 )
 
+
+def _normalize_email(value: object) -> str:
+    """Lowercase and strip an email address for storage and comparison.
+
+    Email addresses are case-insensitive in the part before the ``@``, so
+    ``Farmer@Example.com`` and ``farmer@example.com`` must be one account —
+    otherwise the second registration looks like a duplicate to the human but
+    succeeds as a separate row, and that person then "loses" their history.
+    """
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
 # ---------------------------------------------------------------------------
 # Model IDs
 # ---------------------------------------------------------------------------
@@ -119,6 +133,37 @@ class Settings(BaseSettings):
     #: When the API is unavailable, fall back to the embedded Tébessa KB.
     advisor_fallback_enabled: bool = True
 
+    # --- local database & authentication -----------------------------------
+    #: SQLite file holding accounts and sessions. A relative path resolves
+    #: against the backend package, so the db lands next to main.py no matter
+    #: which directory the server was started from (mirrors how the frontend
+    #: path is derived).
+    database_path: str = "hassad.db"
+    #: A session token older than this is rejected on use.
+    session_ttl_days: int = 30
+    #: Minimum password length. Deliberately modest — demanding symbols and
+    #: digits mostly teaches people to write the password on the keyboard,
+    #: and the real defence is the scrypt cost below, not a checklist.
+    min_password_length: int = 8
+    #: Emails (comma-separated) promoted to admin when they register. Admins
+    #: are the only ones allowed to call /api/admin/users. A user already in
+    #: the db is re-promoted on their next login, so editing `.env` is enough
+    #: — no manual db surgery.
+    admin_emails: str = ""
+    #: Brute-force throttle for /api/login, per email+IP pair.
+    login_max_attempts: int = 5
+    login_lockout_seconds: int = 300
+
+    # --- password hashing cost ---------------------------------------------
+    #: scrypt work factor. Memory usage is roughly 128*N*r bytes, so N=2**15
+    #: with r=8 costs ~32 MiB and tens of ms per verification — that cost is
+    #: the whole point: it makes an offline attack on a stolen db expensive.
+    #: Raise for stronger hardware; hashes are self-describing, so raising it
+    #: never invalidates existing accounts. Tests lower it to stay fast.
+    scrypt_n: int = 2 ** 15
+    scrypt_r: int = 8
+    scrypt_p: int = 1
+
     # --- HTTP --------------------------------------------------------------
     #: Comma-separated in `.env`. `*` allows any origin (fine for local dev).
     cors_origins: str = "*"
@@ -155,6 +200,30 @@ class Settings(BaseSettings):
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()] or ["*"]
+
+    @property
+    def database_file(self) -> Path:
+        """Absolute path to the SQLite database file.
+
+        A relative ``database_path`` resolves against the backend package
+        rather than the cwd, so the file is in the same place whether the
+        server was started from the project root, from ``backend\\``, or by
+        a double-clicked launcher.
+        """
+        path = Path(self.database_path).expanduser()
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return path
+
+    @property
+    def admin_email_list(self) -> list[str]:
+        """Normalized (lowercased, de-duplicated) admin email addresses."""
+        seen: dict[str, None] = {}
+        for raw in self.admin_emails.split(","):
+            email = _normalize_email(raw)
+            if email:
+                seen.setdefault(email, None)
+        return list(seen)
 
     @property
     def api_key(self) -> str | None:

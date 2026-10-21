@@ -60,3 +60,52 @@ pre {
 h2 { font-size: 14px; margin: 18px 0 8px; }
 .hidden { display: none; }
 a { color: #1a7f4b; }
+
+/* --- account panel ------------------------------------------------------ */
+
+input[type=text],
+input[type=email],
+input[type=password] {
+  display: block; width: 100%; box-sizing: border-box;
+  font-size: 14px; padding: 8px 10px; margin-bottom: 12px;
+  background: #fff; color: inherit;
+  border: 1px solid #d9dce1; border-radius: 6px;
+}
+input:focus-visible {
+  outline: 2px solid #1a7f4b; outline-offset: 1px;
+}
+
+.tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.tab {
+  flex: 1; margin-top: 0;
+  background: #eef0f2; color: #374151;
+  border: 1px solid #d9dce1;
+}
+.tab.active { background: #1a7f4b; color: #fff; border-color: #1a7f4b; }
+
+.muted { font-weight: 400; color: #6b7280; }
+
+#auth-status { margin-top: 10px; font-size: 13px; color: #6b7280; }
+#auth-status.err { color: #b42318; }
+#auth-status.ok  { color: #1a7f4b; }
+
+.identity {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.identity .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
+.identity .v { font-size: 15px; font-weight: 600; margin-top: 3px; word-break: break-word; }
+
+button.secondary {
+  margin-top: 0; background: #fff; color: #1a7f4b;
+  border: 1px solid #1a7f4b;
+}
+#auth-admin { margin-top: 12px; }
+
+@media (prefers-color-scheme: dark) {
+  input[type=text],
+  input[type=email],
+  input[type=password] { background: #0f1114; border-color: #333; color: inherit; }
+  .tab { background: #22262c; color: #d1d5db; border-color: #333; }
+  button.secondary { background: transparent; }
+}
