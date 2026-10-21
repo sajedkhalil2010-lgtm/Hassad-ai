@@ -57,7 +57,7 @@ echo       API docs     :  http://127.0.0.1:8000/docs
 echo       Health check :  http://127.0.0.1:8000/health
 echo   ------------------------------------------------------------
 echo.
-echo     A full analysis takes ~30-70s (real Gemini calls).
+echo     A full analysis takes ~8-10s (real Groq vision + advisory calls).
 echo     Press Ctrl+C in THIS window to stop the server.
 echo.
 
