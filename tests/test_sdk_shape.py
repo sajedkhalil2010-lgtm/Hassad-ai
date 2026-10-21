@@ -254,7 +254,7 @@ def main():
     adv_call = c5.last_call
     check("advisor uses advisor_model", adv_call.get("model") == cfg.advisor_model,
           f"got {adv_call.get('model')}")
-    check("advisor model is user's chosen one", cfg.advisor_model == "llama-3.3-70b-versatile",
+    check("advisor model is a live Groq text model", cfg.advisor_model == "openai/gpt-oss-120b",
           f"got {cfg.advisor_model}")
     check("advisor request is text-only",
           isinstance((adv_call.get("messages") or [{}])[0].get("content"), str))

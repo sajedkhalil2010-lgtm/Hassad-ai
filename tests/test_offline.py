@@ -86,8 +86,8 @@ def main() -> int:
     check("real key hidden from repr", "gsk_FakeSuiteKey" not in repr(keyed.groq_api_key))
     check("vision model is a live Groq vision model",
           Settings(_env_file=None).vision_model == "qwen/qwen3.8-27b")
-    check("advisor model is the chosen Groq model",
-          Settings(_env_file=None).advisor_model == "llama-3.3-70b-versatile")
+    check("advisor model is a live Groq text model",
+          Settings(_env_file=None).advisor_model == "openai/gpt-oss-120b")
     check("retired llama-3.2 vision id is NOT the default",
           "llama-3.2-11b-vision-preview" not in Settings(_env_file=None).vision_model)
     check("timeout gives real headroom", Settings(_env_file=None).request_timeout_s >= 120.0)

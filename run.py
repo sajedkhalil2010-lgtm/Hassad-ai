@@ -31,6 +31,18 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+# The project lives in a folder whose name is non-ASCII, and this launcher
+# prints PROJECT_ROOT. A Windows console defaults to a legacy codepage
+# (cp1252) that cannot encode it, so the moment output is redirected to a
+# file or pipe the launcher dies with UnicodeEncodeError on a *print*.
+# Force UTF-8, and degrade to replacement characters rather than ever
+# aborting startup over a log line.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # pragma: no cover - exotic streams (frozen exe, etc)
+        pass
+
 #: Anything above this counts as "the server never came up".
 STARTUP_TIMEOUT_S = 30.0
 
@@ -91,10 +103,10 @@ def check_dependencies() -> bool:
             missing.append(name)
 
     if not missing:
-        print(f"[1/4] Dependencies ......... OK ({len(REQUIRED_MODULES)} packages)")
+        print(f"[1/5] Dependencies ......... OK ({len(REQUIRED_MODULES)} packages)")
         return True
 
-    print(f"[1/4] Dependencies ......... MISSING: {', '.join(missing)}")
+    print(f"[1/5] Dependencies ......... MISSING: {', '.join(missing)}")
     print(f"      Install them with:  {sys.executable} -m pip install -r requirements.txt")
     return False
 
@@ -111,6 +123,51 @@ def check_key() -> tuple[bool, str]:
     if settings.is_configured:
         return True, f"configured (masked {settings.masked_key}, vision {settings.vision_model})"
     return False, "NOT SET — .env still holds the placeholder. /api/v1/analyze will return auth error."
+
+
+def check_models() -> tuple[bool, str]:
+    """Probe Groq's live model list for the two configured ids.
+
+    Guards against a retired model id — the exact failure that otherwise
+    costs a full debugging cycle to discover. Model docs go stale:
+    `llama-3.3-70b-versatile` was still listed as a Production model on
+    Groq's own site after they had stopped serving it, so the only
+    trustworthy validation is asking the API what it will actually run.
+
+    Best-effort by design. Offline, rate-limited or auth problems degrade to
+    a WARNING rather than blocking startup: the advisor has a local-KB
+    fallback, and the server is still useful for the UI and diagnostics.
+    """
+    try:
+        from agents.config import get_settings
+
+        settings = get_settings()
+    except Exception as exc:  # pragma: no cover - config unreadable
+        return False, f"could not load settings: {exc}"
+
+    if not settings.is_configured:
+        return False, "skipped (GROQ_API_KEY not configured)"
+
+    try:
+        from groq import Groq
+
+        client = Groq(api_key=settings.api_key, timeout=15.0, max_retries=0)
+        available = {model.id for model in client.models.list().data}
+    except Exception as exc:
+        return False, f"could not verify ({type(exc).__name__}) — server still starts"
+
+    wanted = (
+        ("vision", settings.vision_model),
+        ("advisor", settings.advisor_model),
+    )
+    missing = [f"{label} {mid}" for label, mid in wanted if mid not in available]
+    if missing:
+        return False, (
+            "NOT SERVED by Groq: " + ", ".join(missing)
+            + "  -> edit agents/config.py (the API would return model-not-found)"
+        )
+
+    return True, f"vision {settings.vision_model} + advisor {settings.advisor_model}"
 
 
 def is_port_free(host: str, port: int) -> bool:
@@ -242,27 +299,31 @@ def main() -> int:
 
     problems = verify_no_shadowing()
     if problems:
-        print("[2/4] Import isolation ...... FAILED")
+        print("[2/5] Import isolation ...... FAILED")
         for problem in problems:
             print(f"      ! {problem}")
         return 1
-    print(f"[2/4] Import isolation ...... OK (agents/main resolve inside this folder)")
+    print(f"[2/5] Import isolation ...... OK (agents/main resolve inside this folder)")
 
     key_ok, key_detail = check_key()
-    print(f"[3/4] Groq API key .......... {'OK' if key_ok else 'WARNING'}")
+    print(f"[3/5] Groq API key .......... {'OK' if key_ok else 'WARNING'}")
     print(f"      {key_detail}")
+
+    models_ok, models_detail = check_models()
+    print(f"[4/5] Model availability ... {'OK' if models_ok else 'WARNING'}")
+    print(f"      {models_detail}")
 
     # Report the port we actually land on; if the preferred one is taken, say
     # by what, so the user is never confused about which server they reached.
     if not is_port_free(args.host, args.port):
-        print(f"[4/4] Port {args.port} ........... BUSY ({port_owner(args.port)})")
+        print(f"[5/5] Port {args.port} ........... BUSY ({port_owner(args.port)})")
         port = pick_port(args.host, args.port)
         base_url = f"http://{args.host}:{port}"
         print(f"      -> falling back to {base_url}")
     else:
         port = args.port
         base_url = f"http://{args.host}:{port}"
-        print(f"[4/4] Port {args.port} ........... free")
+        print(f"[5/5] Port {args.port} ........... free")
 
     print(f"      Starting Uvicorn ...... {base_url}")
 

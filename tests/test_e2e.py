@@ -91,8 +91,18 @@ def main() -> int:
         problems.append("advisory missing meta/title")
     if len(body.get("stages", [])) != 2:
         problems.append("expected 2 stages")
-    if "AQ.Ab8" in r.text:
+    # The leak check must test the credential actually in use. This used to
+    # hardcode a Gemini key prefix; after the Groq migration it would have
+    # passed even if the live key were returned verbatim. Verify both the full
+    # secret and a prefix too short to be satisfied by any masked form
+    # (`gsk_...L3A9`).
+    from agents.config import get_settings
+
+    secret = get_settings().api_key or ""
+    if secret and secret in r.text:
         problems.append("API KEY LEAKED IN RESPONSE")
+    if secret[:12] and secret[:12] in r.text:
+        problems.append("API KEY PREFIX LEAKED IN RESPONSE")
 
     print("\n" + "=" * 52)
     if problems:

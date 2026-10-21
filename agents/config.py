@@ -48,11 +48,17 @@ PLACEHOLDER_MARKERS = (
 # and, importantly for us, it supports JSON mode alongside image input.
 VISION_MODEL_DEFAULT = "qwen/qwen3.8-27b"
 
-# NOTE: `llama-3.3-70b-versatile` carries a Groq deprecation notice (shutdown
-# date 2026-08-16) but is still listed as a Production model. Kept as the
-# user's explicit choice; `groq.NotFoundError` is classified as non-retryable
-# so a future retirement surfaces as a clear message rather than a silent hang.
-ADVISOR_MODEL_DEFAULT = "llama-3.3-70b-versatile"
+# NOTE: `llama-3.3-70b-versatile` was not merely flagged for deprecation — it
+# was RETIRED. Verified against a live key via `client.models.list()` on
+# 2026-10-21: the id is absent and every call returned model-not-found. Docs
+# listing it as a Production model were stale, so a doc-only check is NOT
+# sufficient to validate a model id here; `run.py` now probes the live
+# models endpoint at startup.
+# `openai/gpt-oss-120b` is the strongest reasoning model actually served on
+# the account and supports the JSON mode the advisory schema depends on.
+# `NotFoundError` stays classified non-retryable so a future retirement
+# surfaces as a clear message naming this field, not a silent retry loop.
+ADVISOR_MODEL_DEFAULT = "openai/gpt-oss-120b"
 
 
 class Settings(BaseSettings):
