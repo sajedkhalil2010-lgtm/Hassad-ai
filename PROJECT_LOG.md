@@ -13,7 +13,7 @@
 | Project root | `C:\Users\user\Desktop\حصاد v1` |
 | Python | 3.14.7 |
 | Web framework | FastAPI 0.143.0 + Uvicorn 0.54.0 |
-| Gemini SDK | **`google-genai` 2.29.0** (modern client API) |
+| Groq SDK | **`groq` 1.7.0** (OpenAI-compatible chat completions) |
 | Settings | pydantic-settings 2.15.0 / pydantic 2.14.0 |
 | Upload parsing | python-multipart 0.0.32, Pillow 12.3.0 |
 | VCS | git, initialized at project root, `.env` excluded |
@@ -24,28 +24,34 @@ The folder was **empty** at initialization — no prior files were overwritten.
 
 ## 2. Single-key secure architecture
 
-The whole system runs on **exactly one credential**: `GEMINI_API_KEY`.
+The whole system runs on **exactly one credential**: `GROQ_API_KEY`.
 
 ```
-.env                       <- GEMINI_API_KEY=<key>   (git-ignored, never committed)
+.env                       <- GROQ_API_KEY=<key>   (git-ignored, never committed)
   └─> agents/config.py     <- Settings (pydantic-settings: env > .env > default)
         └─> SecretStr      <- repr()/str() render as **********
-              ├─> DiagnosticAgent  (one vision pass)
-              └─> AdvisorAgent     (advisory generation)
+              ├─> DiagnosticAgent  (vision pass -> qwen/qwen3.8-27b)
+              └─> AdvisorAgent     (advisory  -> llama-3.3-70b-versatile)
                     └─> SupervisorAgent  (orchestration only — holds no key)
 ```
+
+> **Provider migration (2026-10-21).** The project moved from Gemini to Groq.
+> `google-genai` is no longer a dependency; `GEMINI_API_KEY` may remain in
+> `.env` but is ignored by `Settings` (`extra="ignore"`).
 
 Security properties, all covered by the offline test suite:
 
 * **One key, no pool.** There is deliberately no key-rotation or multi-key
   machinery — a single credential keeps the trust boundary obvious.
 * **`SecretStr` containment.** The key lives in a `pydantic.SecretStr`, so
-  `repr(settings)` and `str(settings.gemini_api_key)` render `**********`.
+  `repr(settings)` and `str(settings.groq_api_key)` render `**********`.
   It is only ever unwrapped inside `Settings.api_key`, at the two call sites.
-* **Placeholder rejection.** The shipped `your_single_gemini_api_key_here`
-  value is treated as *unconfigured*, not as a live credential
-  (`Settings._reject_placeholder`). A deployment that forgot to set the key
-  fails loudly and immediately rather than sending an anonymous request.
+* **Placeholder rejection.** Shipped sample values (e.g.
+  `gsk_your_actual_key_here`) are treated as *unconfigured*, not as a live
+  credential (`Settings._reject_placeholder`, matched by exact value **and**
+  by substring markers, so a `gsk_`-prefixed sample string cannot masquerade
+  as real). A deployment that forgot to set the key fails loudly and
+  immediately rather than sending a bad-key request.
 * **Never emitted in any payload.** `/health` returns only the key *state*
   (`"not configured"` or a 4+4 masked fragment). No error message, stage entry,
   traceback or HTTP body ever contains the key — asserted explicitly in tests.
@@ -226,6 +232,7 @@ curl -X POST "http://127.0.0.1:8000/api/v1/analyze" -F "file=@leaf.jpg"
 | 20 | 2026-10-19 | **Test coverage:** `tests/test_ui.py` (**19 checks** — route, content-type, required controls, other endpoints unaffected, upload guards still rejecting) plus `tests/test_e2e.py` (live end-to-end through the exact request the UI issues: real Gemini call → `Early blight` / اللفحة المبكرة + Tébessa advisory in 28.7 s, both stages `ok`, no key leaked). Suite total **156**. |
 | 21 | 2026-10-19 | **`start_stable.bat`** — production launcher that runs `uvicorn main:app --host 127.0.0.1 --port 8000` **directly, with no `--reload`**. `run.py` and `start.bat` use `reload`-less uvicorn too, but wrap it in a Python supervisor thread; this script removes that layer entirely so the process tree is a single uvicorn — nothing restarts mid-session, and connections stay up across repeated image uploads. Prints the exact URLs before binding, and pre-checks port 8000 with `netstat` so a clash reports a clear message instead of a raw `[Errno 10048]`. |
 | 22 | 2026-10-19 | **HTTP 429 / quota resilience.** Reporting said a 429 "crashes or returns `{}`"; probing the real stack showed it did neither — it already returned a structured 429. The genuine gaps were **no retry** and an **English-only** message, both now fixed. `agents/base.py` gained `is_quota_error()` (duck-typed on `.code`/`status`, so base.py keeps its zero-SDK-import property) and `run_with_quota_retry()`, an injectable-sleeper loop that retries **only** quota errors with exponential backoff (2s, 4s — deliberately short, since an analysis already costs tens of seconds); a 400 or bad key is never retried, because that only burns more quota. Both agents wrap their `generate_content` call in it, with `quota_retry_attempts` / `quota_retry_base_delay_s` on `Settings`. `AgentError` gained `message_en`, and the quota `message` is now the Arabic string the user asked for — `static/index.html` renders `error.message` directly, so the farmer sees it with no frontend change. **Bug found and fixed:** `advisor_agent.py` discarded the classified error whenever the local-KB fallback was disabled, replacing it with a generic "No advisory source available." — losing both the Arabic text and the true `retryable` flag; it now surfaces the original error. Suite **192** (new `tests/test_quota_retry.py`, 31 checks). Live-verified against a **real** 429 from Gemini: `duration_ms` 502 → **7397** (3 calls + backoff) and the Arabic message in the HTTP body, no traceback, no key. |
+| 23 | 2026-10-21 | **Gemini → Groq migration (full backend switch).** `google-genai` removed from `requirements.txt`, `groq` 1.7.0 added. `Settings` now exposes `groq_api_key` (SecretStr), `vision_model`, `advisor_model`; `gemini_model`/`gemini_api_key`/`gemini_temperature`/`gemini_max_output_tokens` are gone. **Model IDs checked against Groq's live deprecation page before coding** — the requested `llama-3.2-11b-vision-preview` has been **shut down since 2025-04-14** and would have failed every call, so vision runs **`qwen/qwen3.8-27b`** (the only production Groq vision model, and it supports JSON mode) per user decision; advisor keeps the user's explicit choice `llama-3.3-70b-versatile`, which carries a 2026-08-16 deprecation notice — so a `NotFoundError` (404) is now classified **non-retryable** and tells the operator exactly which config field to change, instead of looping. **Both agents rewritten** to `client.chat.completions.create(...)` with `response_format={"type":"json_object"}`; the vision call encodes the pre-normalised JPEG as `data:image/jpeg;base64,...` inside an `image_url` part. Clients are built with **`max_retries=0`** so Groq's own internal retries cannot stack under `run_with_quota_retry` (3×3 calls). `is_quota_error()` now reads **`status_code`** — Groq sets neither `.code` nor `.status`, so the old detector would have matched nothing and silently disabled the retry. `_classify_sdk_error` maps Groq's subclasses (`RateLimitError`/`AuthenticationError`/`NotFoundError`/`APITimeoutError`). Diagnosis output gains the frontend key **`recommendations`** (always non-empty). Arabic quota message made provider-neutral (it previously named Gemini). `run.py` module probe, `/health` (`provider`, both models) and `requirements.txt` updated. **Suite 222** (77 offline / 93 sdk-shape / 33 quota-retry / 19 ui), all green. `.env` now carries `GROQ_API_KEY`; its shipped placeholder is rejected via substring markers so a `gsk_`-prefixed sample value cannot masquerade as a real key. |
 
 ## 7. Launching
 

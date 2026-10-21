@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 #: Anything above this counts as "the server never came up".
 STARTUP_TIMEOUT_S = 30.0
 
-REQUIRED_MODULES = ("fastapi", "uvicorn", "pydantic_settings", "google.genai", "PIL")
+REQUIRED_MODULES = ("fastapi", "uvicorn", "pydantic_settings", "groq", "PIL")
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +109,8 @@ def check_key() -> tuple[bool, str]:
         return False, f"could not load settings: {exc}"
 
     if settings.is_configured:
-        return True, f"configured (masked {settings.masked_key}, model {settings.gemini_model})"
-    return False, "NOT SET — .env still holds the placeholder. /api/v1/analyze will return 500 auth."
+        return True, f"configured (masked {settings.masked_key}, vision {settings.vision_model})"
+    return False, "NOT SET — .env still holds the placeholder. /api/v1/analyze will return auth error."
 
 
 def is_port_free(host: str, port: int) -> bool:
@@ -249,7 +249,7 @@ def main() -> int:
     print(f"[2/4] Import isolation ...... OK (agents/main resolve inside this folder)")
 
     key_ok, key_detail = check_key()
-    print(f"[3/4] Gemini API key ........ {'OK' if key_ok else 'WARNING'}")
+    print(f"[3/4] Groq API key .......... {'OK' if key_ok else 'WARNING'}")
     print(f"      {key_detail}")
 
     # Report the port we actually land on; if the preferred one is taken, say
@@ -286,7 +286,7 @@ def main() -> int:
     print(f"    Analyze POST : {base_url}/api/v1/analyze")
     print("-" * 62)
     if not key_ok:
-        print("  NOTE: set GEMINI_API_KEY in .env, then restart, before analyzing.")
+        print("  NOTE: set GROQ_API_KEY in .env, then restart, before analyzing.")
     print("  Press Ctrl+C in this window to stop the server.\n")
 
     if not args.no_open:

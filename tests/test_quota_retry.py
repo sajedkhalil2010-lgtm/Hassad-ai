@@ -1,21 +1,27 @@
-"""Quota (HTTP 429) retry tests — no network, no key, no real sleeping.
+"""HTTP 429 / rate-limit retry tests — no network, no key, no real sleeping.
 
 Proves the three behaviours the farmer actually depends on:
   1. a 429 is retried with exponential backoff instead of failing instantly,
   2. a non-quota error is NOT retried (never burn quota on a bad request),
   3. when retries are exhausted we return a friendly Arabic error, not a
      traceback and not an empty object.
+
+Uses REAL ``groq.APIStatusError`` instances and the REAL Groq client shape
+(``chat.completions.create``) so the assertions hold against production code
+paths rather than a lookalike.
 """
 
 from __future__ import annotations
 
 import sys
 
+import httpx
 from PIL import Image
 
 import agents.diagnostic_agent as diag_mod
 import agents.advisor_agent as adv_mod
-from google.genai import errors as genai_errors
+from groq import APIError as GroqAPIError
+from groq import APIStatusError
 
 from agents.base import QUOTA_MESSAGE_AR, is_quota_error, run_with_quota_retry
 from agents.config import Settings
@@ -23,6 +29,9 @@ from agents.supervisor_agent import SupervisorAgent
 
 PASS = 0
 FAIL = 0
+
+#: Never allow a credential-shaped string to survive into a user-facing error.
+FAKE_KEY = "gsk_FakeRetryKey1234567890abcdef"
 
 
 def check(name, cond, extra=""):
@@ -43,29 +52,59 @@ def make_png() -> bytes:
     return buf.getvalue()
 
 
-def quota_error() -> genai_errors.APIError:
-    return genai_errors.APIError(429, {"error": {"message": "RESOURCE_EXHAUSTED", "status": "RESOURCE_EXHAUSTED"}})
+def api_error(status: int, message: str = "boom") -> APIStatusError:
+    """Build a genuine groq.APIStatusError carrying an HTTP status."""
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    body = {"error": {"message": message, "type": "invalid_request_error"}}
+    request = httpx.Request("POST", url)
+    response = httpx.Response(status, request=request, json=body)
+    return APIStatusError(message, response=response, body=body)
+
+
+def quota_error() -> APIStatusError:
+    return api_error(429, "rate_limit_error: exhausted")
+
+
+class _Message:
+    def __init__(self, content):
+        self.content = content
+
+
+class _Choice:
+    def __init__(self, content):
+        self.message = _Message(content)
+
+
+class _Completion:
+    def __init__(self, content):
+        self.choices = [_Choice(content)]
 
 
 class FlakyClient:
-    """Fails with ``fail_with`` for the first ``fail_times`` calls, then succeeds."""
+    """Fails with ``fail_with`` for the first ``fail_times`` calls, then succeeds.
+
+    Exposes the same ``chat.completions.create`` surface as ``groq.Groq``.
+    """
 
     def __init__(self, fail_with, fail_times: int, ok_text: str):
         self.calls = 0
         self.fail_with = fail_with
         self.fail_times = fail_times
         self.ok_text = ok_text
-        self.models = self
 
-    def generate_content(self, **kwargs):
-        self.calls += 1
-        if self.calls <= self.fail_times:
-            raise self.fail_with
-        return self
+        outer = self
 
-    @property
-    def text(self):
-        return self.ok_text
+        class _Completions:
+            def create(self, **kwargs):
+                outer.calls += 1
+                if outer.calls <= outer.fail_times:
+                    raise outer.fail_with
+                return _Completion(outer.ok_text)
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
 
 
 GOOD_JSON = (
@@ -73,7 +112,8 @@ GOOD_JSON = (
     '"disease_ar": "\u0627\u0644\u0644\u0641\u062d\u0629 \u0627\u0644\u0645\u0628\u0643\u0631\u0629", '
     '"pathogen": "Alternaria solani", "pathology": "tissue", "symptoms": ["a"], '
     '"severity": "moderate", "severity_pct": 0.12, "confidence": 0.87, '
-    '"confidence_basis": "clear", "differential": ["Late blight"], "image_quality": "good"}'
+    '"confidence_basis": "clear", "recommendations": ["remove infected leaves"], '
+    '"differential": ["Late blight"], "image_quality": "good"}'
 )
 
 # Zero real sleeping: we assert the schedule through the injected `sleep`.
@@ -82,12 +122,17 @@ FAST = {"quota_retry_base_delay_s": 0.0}
 
 def main() -> int:
     print("\n=== A. is_quota_error (duck-typed, no SDK import required) ===")
-    check("code=429 is quota", is_quota_error(quota_error()))
+    check("status_code=429 is quota", is_quota_error(quota_error()))
+    # Regression guard: Groq sets status_code but NOT .code/.status. If the
+    # detector ever regresses to reading only `.code`, the retry silently dies.
+    check("detector reads status_code, not just .code",
+          getattr(quota_error(), "code", None) is None and is_quota_error(quota_error()))
     check("status RESOURCE_EXHAUSTED is quota",
           is_quota_error(type("E", (Exception,), {"status": "RESOURCE_EXHAUSTED"})()))
+    check("string status_code '429' is quota",
+          is_quota_error(type("E", (Exception,), {"status_code": "429"})()))
     check("plain ValueError is NOT quota", not is_quota_error(ValueError("nope")))
-    check("code=500 is NOT quota",
-          not is_quota_error(genai_errors.APIError(500, {"error": {"message": "boom"}})))
+    check("status_code=500 is NOT quota", not is_quota_error(api_error(500, "boom")))
 
     print("\n=== B. run_with_quota_retry backoff schedule ===")
     sleeps = []
@@ -114,7 +159,7 @@ def main() -> int:
     try:
         run_with_quota_retry(always, attempts=3, base_delay_s=0.0, sleep=lambda _s: None)
         check("raises after exhausting attempts", False)
-    except genai_errors.APIError:
+    except GroqAPIError:
         check("raises after exhausting attempts", True)
     check("honoured the attempt budget", len(seen) == 3, f"got {len(seen)}")
 
@@ -123,16 +168,16 @@ def main() -> int:
 
     def bad_request():
         calls["n"] += 1
-        raise genai_errors.APIError(400, {"error": {"message": "bad image"}})
+        raise api_error(400, "bad image")
 
     try:
         run_with_quota_retry(bad_request, attempts=3, base_delay_s=0.0, sleep=lambda _s: None)
         check("400 propagates", False)
-    except genai_errors.APIError:
+    except GroqAPIError:
         check("400 propagates", True)
     check("400 is not retried (1 call only)", calls["n"] == 1, f"got {calls['n']}")
 
-    cfg = Settings(_env_file=None, gemini_api_key="AIzaFakeKeyQuotaRetry1234567890", **FAST)
+    cfg = Settings(_env_file=None, groq_api_key=FAKE_KEY, **FAST)
 
     print("\n=== E. DiagnosticAgent retries once and recovers ===")
     ok_client = FlakyClient(quota_error(), fail_times=1, ok_text=GOOD_JSON)
@@ -150,11 +195,11 @@ def main() -> int:
     check("marked retryable", res2.ok is False and res2.error.retryable is True)
     check("attempt budget respected", dead.calls == cfg.quota_retry_attempts,
           f"got {dead.calls}")
-    check("no key leaked", "AIzaFake" not in str(res2.error.to_dict()))
+    check("no key leaked", FAKE_KEY not in str(res2.error.to_dict()))
 
     print("\n=== G. AdvisorAgent exhausted -> Arabic, and KB fallback still works ===")
     adv_dead = FlakyClient(quota_error(), fail_times=99, ok_text="")
-    cfg_no_fallback = Settings(_env_file=None, gemini_api_key="AIzaFakeKeyQuotaRetry1234567890",
+    cfg_no_fallback = Settings(_env_file=None, groq_api_key=FAKE_KEY,
                                advisor_fallback_enabled=False, **FAST)
     adv_res = adv_mod.AdvisorAgent(cfg_no_fallback, client=adv_dead).build_plan(
         {"crop": "tomato", "disease": "Early blight", "severity": "moderate", "confidence": 0.9})
@@ -186,9 +231,9 @@ def main() -> int:
     check("body is NOT empty", bool(body))
     check("body.ok is false", body.get("ok") is False)
     check("body.error.kind == quota", (body.get("error") or {}).get("kind") == "quota")
-    check("body.error.message is Arabic", "تم استهلاك حد الطلبات المؤقت" in str((body.get("error") or {}).get("message", "")))
+    check("body.error.message is Arabic", "\u062a\u0645 \u0627\u0633\u062a\u0647\u0644\u0627\u0643 \u062d\u062f \u0627\u0644\u0637\u0644\u0628\u0627\u062a \u0627\u0644\u0645\u0624\u0642\u062a" in str((body.get("error") or {}).get("message", "")))
     check("no traceback in body", "Traceback" not in http.text)
-    check("no key leaked over HTTP", "AIzaFake" not in http.text)
+    check("no key leaked over HTTP", FAKE_KEY not in http.text)
 
     print(f"\n{'='*52}\nTOTAL: {PASS} passed, {FAIL} failed\n{'='*52}")
     return 1 if FAIL else 0

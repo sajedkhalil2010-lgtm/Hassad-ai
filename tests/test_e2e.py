@@ -41,7 +41,7 @@ def main() -> int:
     page = httpx.get(f"{base}/", timeout=10)
     print(f"  GET /   -> {page.status_code} ({len(page.content)} bytes)")
 
-    print("\n=== POST /api/v1/analyze (live Gemini call, ~60-70s) ===")
+    print("\n=== POST /api/v1/analyze (live Groq call) ===")
     png = make_leaf()
     print(f"  payload: synthetic leaf, {len(png)} bytes")
 

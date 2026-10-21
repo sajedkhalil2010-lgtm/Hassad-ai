@@ -1,19 +1,26 @@
 """DiagnosticAgent — visual pathology of a single crop-leaf image.
 
-Uses the project's **one and only** Gemini API key through the shared client
+Uses the project's **one and only** Groq API key through the shared client
 built in :mod:`agents.config`. Every failure mode is classified into an
 :class:`~agents.base.AgentError` so the supervisor can decide what to do;
 nothing here ever raises a bare exception to the caller.
+
+Vision call shape (Groq OpenAI-compatible chat completions)::
+
+    client.chat.completions.create(
+        model=vision_model,
+        messages=[{role: user, content: [text, image_url(data:image/jpeg;base64,...)]}],
+        response_format={"type": "json_object"},
+    )
 """
 
 from __future__ import annotations
 
+import base64
 import time
 from typing import Any
 
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types
+from groq import APIError as GroqAPIError
 
 from .base import (
     QUOTA_MESSAGE_AR,
@@ -32,7 +39,9 @@ from .base import (
 from .config import Settings, get_settings
 
 #: Structured-output contract handed to the model. Keeping it inline (rather
-#: than a remote schema) makes the shape auditable and stable.
+#: than a remote schema) makes the shape auditable and stable. The keys the
+#: frontend depends on — disease / confidence / severity / symptoms /
+#: recommendations — are all part of this contract.
 _DIAGNOSTIC_SCHEMA_PROMPT = """\
 You are a plant-pathologist AI. Analyse the crop leaf image and return ONLY a
 JSON object with EXACTLY this shape (no prose, no markdown fences):
@@ -49,6 +58,7 @@ JSON object with EXACTLY this shape (no prose, no markdown fences):
   "severity_pct": 0.0,
   "confidence": 0.0,
   "confidence_basis": "why this confidence and not higher",
+  "recommendations": ["immediate action the farmer should take", "..."],
   "differential": ["plausible alternative", "..."],
   "image_quality": "good|usable|poor"
 }
@@ -58,6 +68,7 @@ Rules:
 - Be honest: if the image is blurry, over-exposed or not a leaf, lower
   "confidence" and say so in "confidence_basis"; still fill every field.
 - "disease" must be "Healthy" when no pathology is present.
+- "recommendations" must always be a non-empty array of concrete steps.
 - Write "disease_ar" in natural Arabic; every other value in English.
 """
 
@@ -70,18 +81,22 @@ class DiagnosticAgent:
 
     name = "diagnostic"
 
-    def __init__(self, settings: Settings | None = None, client: genai.Client | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, client: Any | None = None) -> None:
         self.settings = settings or get_settings()
         self._client = client
 
     # -- infrastructure ----------------------------------------------------
 
-    def _get_client(self) -> genai.Client:
-        """Build (once) the single-key Gemini client.
+    def _get_client(self) -> Any:
+        """Build (once) the single-key Groq client.
 
         Raises ``AgentError(kind="auth")`` when no real key is configured, so
         an unconfigured deployment fails loudly and *immediately* rather than
         sending an anonymous request.
+
+        ``max_retries=0`` is deliberate: the Groq SDK retries internally
+        (default 2), and stacking that under our own :func:`run_with_quota_retry`
+        would multiply into 3x3 calls per analysis.
         """
         if self._client is not None:
             return self._client
@@ -90,40 +105,61 @@ class DiagnosticAgent:
         if not key:
             raise AgentError(
                 "auth",
-                "GEMINI_API_KEY is not configured. Set it in the project-root .env file.",
+                "GROQ_API_KEY is not configured. Set it in the project-root .env file.",
                 retryable=False,
             )
 
-        timeout_ms = int(max(5.0, self.settings.request_timeout_s) * 1000)
         try:
-            self._client = genai.Client(
+            from groq import Groq
+
+            self._client = Groq(
                 api_key=key,
-                http_options=types.HttpOptions(timeout=timeout_ms),
+                timeout=max(5.0, self.settings.request_timeout_s),
+                max_retries=0,
             )
+        except AgentError:
+            raise
         except Exception as exc:  # pragma: no cover - defensive
-            raise AgentError("auth", "Failed to initialise the Gemini client.", detail=str(exc)[:160], retryable=False) from exc
+            raise AgentError("auth", "Failed to initialise the Groq client.", detail=str(exc)[:160], retryable=False) from exc
         return self._client
 
     @staticmethod
-    def _classify_sdk_error(exc: genai_errors.APIError) -> AgentError:
-        """Map a Google API error onto our stable failure taxonomy."""
-        code = getattr(exc, "code", None)
-        message = getattr(exc, "message", None) or str(exc)
+    def _classify_sdk_error(exc: BaseException) -> AgentError:
+        """Map a Groq API error onto our stable failure taxonomy.
 
-        if code in (401, 403):
-            return AgentError("auth", "Gemini rejected the API key (invalid or forbidden).", retryable=False)
-        if code == 429 or "RESOURCE_EXHAUSTED" in str(getattr(exc, "status", "") or "").upper():
+        Groq exposes the HTTP status as ``status_code`` (not ``.code``), and
+        offers finer-grained subclasses; we read both so a retired model
+        (404) is reported as non-retryable instead of being looped on.
+        """
+        code = getattr(exc, "status_code", None)
+        if code is None:
+            code = getattr(exc, "code", None)
+        name = type(exc).__name__
+        message = str(getattr(exc, "message", "") or exc)
+
+        if code in (401, 403) or name in ("AuthenticationError", "PermissionDeniedError"):
+            return AgentError("auth", "Groq rejected the API key (invalid or forbidden).", retryable=False)
+        if code == 429 or name == "RateLimitError":
             return AgentError(
                 "quota",
                 QUOTA_MESSAGE_AR,
                 retryable=True,
                 message_en=QUOTA_MESSAGE_EN,
             )
-        if code in (408, 500, 502, 503, 504):
-            return AgentError("busy", "Gemini service is temporarily unavailable.", retryable=True)
-        if code == 400:
-            return AgentError("input", "The image payload was rejected by the vision model.", retryable=False)
-        return AgentError("api", f"Gemini vision call failed ({code}).", detail=message[:160], retryable=True)
+        if code == 404 or name == "NotFoundError":
+            # A retired/unavailable model. Retrying cannot fix this, and it is
+            # exactly the failure mode that bit us with Gemini's retired model.
+            return AgentError(
+                "api",
+                f"Vision model not found on Groq ({name}). Update `vision_model` in agents/config.py.",
+                detail=message[:160],
+                retryable=False,
+            )
+        if code == 400 or name == "BadRequestError":
+            return AgentError("input", "The image payload was rejected by the vision model.", detail=message[:160], retryable=False)
+        if name in ("APIConnectionError", "APITimeoutError") or code in (408, 500, 502, 503, 504):
+            return AgentError("busy", "Groq service is temporarily unavailable.", detail=message[:160], retryable=True)
+        return AgentError("api", f"Groq vision call failed ({code}).", detail=message[:160], retryable=True)
 
     # -- public API --------------------------------------------------------
 
@@ -141,19 +177,27 @@ class DiagnosticAgent:
         except AgentError as exc:
             return AgentResult.failure(exc)
 
+        # Groq takes images as a data URI inside an OpenAI-style message.
+        # normalise_image_bytes already re-encodes to JPEG, so the mime here
+        # is always image/jpeg.
+        image_b64 = base64.b64encode(payload).decode("ascii")
+        data_uri = f"data:{mime};base64,{image_b64}"
+
         def _generate() -> Any:
-            return client.models.generate_content(
-                model=self.settings.gemini_model,
-                contents=[
-                    types.Part.from_bytes(data=payload, mime_type=mime),
-                    _DIAGNOSTIC_SCHEMA_PROMPT,
+            return client.chat.completions.create(
+                model=self.settings.vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": _DIAGNOSTIC_SCHEMA_PROMPT},
+                            {"type": "image_url", "image_url": {"url": data_uri}},
+                        ],
+                    }
                 ],
-                config=types.GenerateContentConfig(
-                    temperature=self.settings.gemini_temperature,
-                    max_output_tokens=self.settings.gemini_max_output_tokens,
-                    response_mime_type="application/json",
-                    top_p=0.95,
-                ),
+                temperature=self.settings.temperature,
+                max_completion_tokens=self.settings.max_output_tokens,
+                response_format={"type": "json_object"},
             )
 
         try:
@@ -162,22 +206,48 @@ class DiagnosticAgent:
                 attempts=self.settings.quota_retry_attempts,
                 base_delay_s=self.settings.quota_retry_base_delay_s,
             )
-        except genai_errors.APIError as exc:
+        except GroqAPIError as exc:
             return AgentResult.failure(self._classify_sdk_error(exc))
+        except AgentError as exc:
+            return AgentResult.failure(exc)
         except Exception as exc:  # network / timeout / SDK-internal
             return AgentResult.failure(
-                AgentError("busy", "The vision request timed out or could not reach Gemini.", detail=str(exc)[:160], retryable=True)
+                AgentError("busy", "The vision request timed out or could not reach Groq.", detail=str(exc)[:160], retryable=True)
             )
 
         elapsed_ms = int((time.perf_counter() - started) * 1000)
 
         try:
-            raw_text = getattr(response, "text", None)
-            report = parse_model_json(raw_text)
+            report = parse_model_json(self._extract_text(response))
         except AgentError as exc:
             return AgentResult.failure(exc)
 
-        return AgentResult.success(self._normalise(report, mime=mime, model=self.settings.gemini_model, elapsed_ms=elapsed_ms, filename=filename))
+        return AgentResult.success(self._normalise(report, mime=mime, model=self.settings.vision_model, elapsed_ms=elapsed_ms, filename=filename))
+
+    @staticmethod
+    def _extract_text(response: Any) -> str | None:
+        """Pull the assistant text out of a chat-completion object.
+
+        Duck-typed on purpose so tests can hand in a plain stub.
+        """
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return None
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return None
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            return content
+        # Some responses deliver content as a list of typed parts.
+        if isinstance(content, list):
+            for part in content:
+                text = getattr(part, "text", None)
+                if isinstance(text, str) and text:
+                    return text
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    return part["text"]
+        return None
 
     # -- output shaping ----------------------------------------------------
 
@@ -186,6 +256,7 @@ class DiagnosticAgent:
         report = as_dict(report)
         symptoms = as_str_list(report.get("symptoms"))
         differential = as_str_list(report.get("differential"))
+        recommendations = as_str_list(report.get("recommendations"))
 
         confidence = clamp01(report.get("confidence"), 0.0)
         severity_pct = clamp01(report.get("severity_pct"), 0.0)
@@ -198,10 +269,18 @@ class DiagnosticAgent:
         if healthy:
             severity = "none"
             severity_pct = 0.0
+            if not recommendations:
+                recommendations = [
+                    "No treatment required; continue the current programme.",
+                    "Scout weekly - early detection keeps a plot healthy.",
+                ]
 
         quality = as_str(report.get("image_quality"), "usable").lower()
         if quality not in {"good", "usable", "poor"}:
             quality = "usable"
+
+        if not recommendations:
+            recommendations = ["Consult the DPA of Tébessa before applying any phytosanitary product."]
 
         return {
             "is_leaf_image": bool(report.get("is_leaf_image", True)),
@@ -217,6 +296,7 @@ class DiagnosticAgent:
             "confidence": confidence,
             "confidence_basis": as_str(report.get("confidence_basis"), ""),
             "low_confidence": confidence < LOW_CONFIDENCE_THRESHOLD,
+            "recommendations": recommendations,
             "differential": differential,
             "image_quality": quality,
             "meta": {

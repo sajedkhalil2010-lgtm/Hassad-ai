@@ -24,7 +24,7 @@ def main() -> int:
     from agents.config import Settings
     from main import INDEX_HTML, create_app
 
-    isolated = Settings(_env_file=None, gemini_api_key=None)
+    isolated = Settings(_env_file=None, groq_api_key=None)
     client = TestClient(create_app(isolated))
 
     print("\n=== Test UI at '/' ===")

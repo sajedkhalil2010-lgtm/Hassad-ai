@@ -1,7 +1,7 @@
 """Shared contracts for the Hassad AI agent layer.
 
 Kept deliberately small and dependency-free (no SDK import here) so that the
-supervisor can classify failures without importing Google's client library.
+supervisor can classify failures without importing the Groq client library.
 """
 
 from __future__ import annotations
@@ -24,11 +24,12 @@ T = TypeVar("T")
 FAILURE_KINDS = frozenset({"auth", "quota", "busy", "upstream", "input", "api"})
 
 
-#: Friendly Arabic message shown to the farmer when the Gemini quota is spent.
+#: Friendly Arabic message shown to the farmer when the API quota is spent.
 #: The frontend renders ``error.message`` directly, so this is what the user
 #: actually sees; an English twin is kept alongside for logs and debugging.
-QUOTA_MESSAGE_AR = "تم استهلاك حد الطلبات المؤقت لـ Gemini، يرجى الانتظار بضع ثوانٍ ثم المحاولة مجدداً"
-QUOTA_MESSAGE_EN = "Gemini API quota exceeded. Please retry in a few seconds."
+#: Provider-neutral: naming a vendor here would go stale on the next migration.
+QUOTA_MESSAGE_AR = "تم استهلاك حد الطلبات المؤقت، يرجى الانتظار بضع ثوانٍ ثم المحاولة مجدداً"
+QUOTA_MESSAGE_EN = "API rate limit reached. Please retry in a few seconds."
 
 
 class AgentError(Exception):
@@ -75,19 +76,30 @@ class AgentError(Exception):
 
 
 def is_quota_error(exc: BaseException) -> bool:
-    """Detect a Gemini 429 / RESOURCE_EXHAUGHTED without importing the SDK.
+    """Detect an HTTP 429 / rate-limit without importing the SDK.
 
-    Matches on the numeric ``code`` attribute the SDK attaches, plus the
-    status string, so it stays duck-typed and ``base.py`` keeps its
-    zero-SDK-import property.
+    Duck-typed so this module keeps its zero-SDK-import property. Checks every
+    status carrier the common SDKs actually use:
+
+    * ``status_code`` - what groq.APIStatusError exposes. The Groq SDK sets
+      neither ``.code`` nor ``.status``, so a check aimed only at those would
+      silently never match and quietly disable the retry.
+    * ``code`` - what google.genai.errors.APIError exposed (kept so this
+      helper stays provider-agnostic).
+    * ``status`` / message text - RESOURCE_EXHAUSTED-style payloads.
     """
-    code = getattr(exc, "code", None)
-    if code == 429:
-        return True
+    for attr in ("status_code", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int) and value == 429:
+            return True
+        if isinstance(value, str) and value.strip() == "429":
+            return True
+
     status = str(getattr(exc, "status", "") or "")
-    if "RESOURCE_EXHAUSTED" in status.upper():
+    if "RESOURCE_EXHAUSTED" in status.upper() or "RATE_LIMIT" in status.upper():
         return True
     return "RESOURCE_EXHAUSTED" in str(exc).upper()
+
 
 
 def run_with_quota_retry(
@@ -97,7 +109,7 @@ def run_with_quota_retry(
     base_delay_s: float = 2.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> T:
-    """Run ``call``, retrying only on quota (429) errors with backoff.
+    """Run ``call``, retrying only on rate-limit (429) errors with backoff.
 
     Delays are exponential from ``base_delay_s`` (2s, 4s, ...) and are kept
     short on purpose: a full analysis already takes tens of seconds, so a

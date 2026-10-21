@@ -5,10 +5,10 @@ actions, an irrigation schedule and prevention guidelines.
 
 Two sources of truth, in order of preference:
 
-1. **Gemini** — one structured generation using the project's single key.
+1. **Groq** — one structured generation using the project's single key.
 2. **Local Tébessa KB** — a built-in, offline knowledge base used whenever the
    API is unavailable, the key is missing, or the response is unusable. The
-   advisor therefore *never* dead-ends a farmer on a quota error.
+   advisor therefore *never* dead-ends a farmer on a rate-limit error.
 """
 
 from __future__ import annotations
@@ -17,9 +17,7 @@ import json
 import time
 from typing import Any
 
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types
+from groq import APIError as GroqAPIError
 
 from .base import (
     QUOTA_MESSAGE_AR,
@@ -209,42 +207,100 @@ LOCAL_KB: dict[str, dict[str, Any]] = {
 _GENERIC_FALLBACK_KEY = "healthy"
 
 
+def _chat_text(response: Any) -> str | None:
+    """Pull the assistant text out of a Groq chat-completion object.
+
+    Duck-typed so tests can hand in a plain stub. Returns ``None`` for an
+    empty/unknown shape, which ``parse_model_json`` turns into a clean,
+    retryable AgentError rather than an exception.
+    """
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return None
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        return None
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                return text
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                return part["text"]
+    return None
+
+
 class AdvisorAgent:
     """Builds localized treatment plans from a diagnostic report."""
 
     name = "advisor"
 
-    def __init__(self, settings: Settings | None = None, client: genai.Client | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, client: Any | None = None) -> None:
         self.settings = settings or get_settings()
         self._client = client
 
     # -- infrastructure ----------------------------------------------------
 
-    def _get_client(self) -> genai.Client:
+    def _get_client(self) -> Any:
+        """Build (once) the single-key Groq client.
+
+        ``max_retries=0`` keeps Groq's internal retries off, so the only
+        backoff in play is our own :func:`run_with_quota_retry`.
+        """
         if self._client is not None:
             return self._client
         key = self.settings.api_key
         if not key:
-            raise AgentError("auth", "GEMINI_API_KEY is not configured.", retryable=False)
-        timeout_ms = int(max(5.0, self.settings.request_timeout_s) * 1000)
-        self._client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=timeout_ms))
+            raise AgentError("auth", "GROQ_API_KEY is not configured.", retryable=False)
+        try:
+            from groq import Groq
+
+            self._client = Groq(
+                api_key=key,
+                timeout=max(5.0, self.settings.request_timeout_s),
+                max_retries=0,
+            )
+        except AgentError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            raise AgentError("auth", "Failed to initialise the Groq client.", detail=str(exc)[:160], retryable=False) from exc
         return self._client
 
     @staticmethod
-    def _classify_sdk_error(exc: genai_errors.APIError) -> AgentError:
-        code = getattr(exc, "code", None)
-        if code in (401, 403):
-            return AgentError("auth", "Gemini rejected the API key.", retryable=False)
-        if code == 429 or "RESOURCE_EXHAUSTED" in str(getattr(exc, "status", "") or "").upper():
+    def _classify_sdk_error(exc: BaseException) -> AgentError:
+        """Map a Groq API error onto the shared failure taxonomy.
+
+        Mirrors DiagnosticAgent's classifier: Groq reports HTTP status via
+        ``status_code``, and 404 (retired model) must NOT be retried.
+        """
+        code = getattr(exc, "status_code", None)
+        if code is None:
+            code = getattr(exc, "code", None)
+        name = type(exc).__name__
+        message = str(getattr(exc, "message", "") or exc)
+
+        if code in (401, 403) or name in ("AuthenticationError", "PermissionDeniedError"):
+            return AgentError("auth", "Groq rejected the API key.", retryable=False)
+        if code == 429 or name == "RateLimitError":
             return AgentError(
                 "quota",
                 QUOTA_MESSAGE_AR,
                 retryable=True,
                 message_en=QUOTA_MESSAGE_EN,
             )
-        if code in (408, 500, 502, 503, 504):
-            return AgentError("busy", "Gemini service temporarily unavailable.", retryable=True)
-        return AgentError("api", f"Gemini advisory call failed ({code}).", retryable=True)
+        if code == 404 or name == "NotFoundError":
+            return AgentError(
+                "api",
+                f"Advisor model not found on Groq ({name}). Update `advisor_model` in agents/config.py.",
+                detail=message[:160],
+                retryable=False,
+            )
+        if name in ("APIConnectionError", "APITimeoutError") or code in (408, 500, 502, 503, 504):
+            return AgentError("busy", "Groq service temporarily unavailable.", detail=message[:160], retryable=True)
+        return AgentError("api", f"Groq advisory call failed ({code}).", detail=message[:160], retryable=True)
 
     # -- public API --------------------------------------------------------
 
@@ -264,14 +320,13 @@ class AdvisorAgent:
 
         if client is not None:
             def _generate() -> Any:
-                return client.models.generate_content(
-                    model=self.settings.gemini_model,
-                    contents=[self._build_prompt(diagnosis)],
-                    config=types.GenerateContentConfig(
-                        temperature=self.settings.gemini_temperature,
-                        max_output_tokens=self.settings.gemini_max_output_tokens,
-                        response_mime_type="application/json",
-                    ),
+                # Plain text->JSON call; no image involved here.
+                return client.chat.completions.create(
+                    model=self.settings.advisor_model,
+                    messages=[{"role": "user", "content": self._build_prompt(diagnosis)}],
+                    temperature=self.settings.temperature,
+                    max_completion_tokens=self.settings.max_output_tokens,
+                    response_format={"type": "json_object"},
                 )
 
             try:
@@ -280,8 +335,8 @@ class AdvisorAgent:
                     attempts=self.settings.quota_retry_attempts,
                     base_delay_s=self.settings.quota_retry_base_delay_s,
                 )
-                remote = parse_model_json(getattr(raw, "text", None))
-            except genai_errors.APIError as exc:
+                remote = parse_model_json(_chat_text(raw))
+            except GroqAPIError as exc:
                 remote_error = self._classify_sdk_error(exc)
             except AgentError as exc:
                 remote_error = exc
@@ -295,7 +350,7 @@ class AdvisorAgent:
 
         if remote is not None:
             merged = self._merge_remote(remote, kb_entry, diagnosis)
-            source = "gemini"
+            source = "groq"
         elif self.settings.advisor_fallback_enabled:
             merged = self._kb_plan(kb_entry, diagnosis)
             source = "local_kb"
@@ -313,7 +368,7 @@ class AdvisorAgent:
             "region_ar": REGION_AR,
             "source": source,
             "latency_ms": elapsed_ms,
-            "fallback_reason": None if source == "gemini" else (remote_error.message if remote_error else "disabled"),
+            "fallback_reason": None if source == "groq" else (remote_error.message if remote_error else "disabled"),
         }
         return AgentResult.success(merged)
 
