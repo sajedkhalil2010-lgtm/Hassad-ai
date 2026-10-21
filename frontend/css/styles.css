@@ -1,0 +1,62 @@
+/* Hassad AI — diagnostic dashboard styling.
+ *
+ * Deliberately minimal and functional: no framework, no build step, no
+ * animations. Kept in its own file so index.html stays readable and the
+ * chat interface (planned) can reuse the same tokens.
+ */
+
+:root { color-scheme: light dark; }
+
+body {
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+  margin: 0; padding: 24px; line-height: 1.5;
+  background: #f5f6f7; color: #1c1e21;
+}
+
+@media (prefers-color-scheme: dark) {
+  body { background: #16181c; color: #e6e6e6; }
+  .card { background: #1f2228 !important; border-color: #333 !important; }
+  input[type=file] { color: inherit; }
+  pre { background: #0f1114 !important; color: #d8d8d8; }
+}
+
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sub { color: #6b7280; font-size: 13px; margin: 0 0 20px; }
+
+.card {
+  background: #fff; border: 1px solid #d9dce1; border-radius: 8px;
+  padding: 16px; margin-bottom: 16px;
+}
+
+label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+input[type=file] { display: block; width: 100%; font-size: 14px; }
+
+button {
+  margin-top: 12px; padding: 9px 18px; font-size: 14px; font-weight: 600;
+  background: #1a7f4b; color: #fff; border: 0; border-radius: 6px; cursor: pointer;
+}
+button:disabled { background: #9aa2ac; cursor: not-allowed; }
+
+img {
+  max-width: 220px; max-height: 220px; border-radius: 6px; margin-top: 12px;
+  display: block; border: 1px solid #d9dce1;
+}
+
+#status { margin-top: 12px; font-size: 13px; color: #6b7280; }
+#status.err { color: #b42318; }
+#status.ok  { color: #1a7f4b; }
+
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.summary div { border: 1px solid #d9dce1; border-radius: 6px; padding: 10px; }
+.summary .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
+.summary .v { font-size: 15px; font-weight: 600; margin-top: 3px; word-break: break-word; }
+
+pre {
+  background: #f3f4f6; border: 1px solid #d9dce1; border-radius: 6px;
+  padding: 12px; font-size: 12px; overflow: auto; max-height: 460px;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+h2 { font-size: 14px; margin: 18px 0 8px; }
+.hidden { display: none; }
+a { color: #1a7f4b; }

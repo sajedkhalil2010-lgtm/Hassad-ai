@@ -1,6 +1,6 @@
 """Offline validation suite — zero network, zero quota.
 
-Run from the project root:  python -m tests.test_offline
+Run from backend/:  python -m tests.test_offline
 """
 
 from __future__ import annotations

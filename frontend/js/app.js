@@ -1,94 +1,15 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hassad AI — Quick Test</title>
-<!-- inline empty favicon so browsers don't 404 -->
-<link rel="icon" href="data:,">
-<style>
-  /* Minimal, functional styling — no frameworks, no animations. */
-  :root { color-scheme: light dark; }
-  body {
-    font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
-    margin: 0; padding: 24px; line-height: 1.5;
-    background: #f5f6f7; color: #1c1e21;
-  }
-  @media (prefers-color-scheme: dark) {
-    body { background: #16181c; color: #e6e6e6; }
-    .card { background: #1f2228 !important; border-color: #333 !important; }
-    input[type=file] { color: inherit; }
-    pre { background: #0f1114 !important; color: #d8d8d8; }
-  }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: #6b7280; font-size: 13px; margin: 0 0 20px; }
-  .card {
-    background: #fff; border: 1px solid #d9dce1; border-radius: 8px;
-    padding: 16px; margin-bottom: 16px;
-  }
-  label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
-  input[type=file] { display: block; width: 100%; font-size: 14px; }
-  button {
-    margin-top: 12px; padding: 9px 18px; font-size: 14px; font-weight: 600;
-    background: #1a7f4b; color: #fff; border: 0; border-radius: 6px; cursor: pointer;
-  }
-  button:disabled { background: #9aa2ac; cursor: not-allowed; }
-  img { max-width: 220px; max-height: 220px; border-radius: 6px; margin-top: 12px; display: block; border: 1px solid #d9dce1; }
-  #status { margin-top: 12px; font-size: 13px; color: #6b7280; }
-  #status.err { color: #b42318; }
-  #status.ok  { color: #1a7f4b; }
-  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
-  .summary div { border: 1px solid #d9dce1; border-radius: 6px; padding: 10px; }
-  .summary .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
-  .summary .v { font-size: 15px; font-weight: 600; margin-top: 3px; word-break: break-word; }
-  pre {
-    background: #f3f4f6; border: 1px solid #d9dce1; border-radius: 6px;
-    padding: 12px; font-size: 12px; overflow: auto; max-height: 460px;
-    white-space: pre-wrap; word-break: break-word;
-  }
-  h2 { font-size: 14px; margin: 18px 0 8px; }
-  .hidden { display: none; }
-  a { color: #1a7f4b; }
-</style>
-</head>
-<body>
-  <h1>Hassad AI — Quick Test</h1>
-  <p class="sub">Single-image end-to-end test against the local backend ·
-     <a href="/docs">/docs</a> · <a href="/health">/health</a></p>
-
-  <div class="card">
-    <label for="file">Leaf image</label>
-    <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff">
-    <img id="preview" class="hidden" alt="Selected leaf image preview">
-    <button id="analyze" disabled>Analyze</button>
-    <div id="status">Choose an image to begin.</div>
-  </div>
-
-  <div id="results" class="hidden">
-    <div class="card">
-      <label>Summary</label>
-      <div class="summary" id="summary"></div>
-    </div>
-
-    <div class="card">
-      <h2 style="margin-top:0">Diagnostic response</h2>
-      <pre id="diagnosis">{}</pre>
-      <h2>Advisor response</h2>
-      <pre id="advisory">{}</pre>
-      <h2>Supervisor response (full report)</h2>
-      <pre id="supervisor">{}</pre>
-    </div>
-  </div>
-
-<script>
+/* Hassad AI — diagnostic dashboard behaviour.
+ *
+ * Talks to the backend on the same origin by default; append
+ * ?api=http://127.0.0.1:8000 to the page URL if it is ever opened from
+ * somewhere else. No framework, no build step.
+ */
 (function () {
   "use strict";
 
-  // Same-origin by default; override with ?api=http://127.0.0.1:8000 if the
-  // page is ever opened from somewhere else.
   var API_BASE = new URLSearchParams(location.search).get("api") || "";
   var ENDPOINT = API_BASE + "/api/v1/analyze";
-  var TIMEOUT_MS = 240000;   // a live run measures ~60-70s, keep headroom
+  var TIMEOUT_MS = 240000;   // live runs measure ~8-10s; generous headroom
 
   var fileInput = document.getElementById("file");
   var btn       = document.getElementById("analyze");
@@ -143,11 +64,11 @@
     results.classList.add("hidden");
 
     var started = Date.now();
-    setStatus("Analyzing… 0s (a live run usually takes ~60-70s)");
+    setStatus("Analyzing… 0s (usually ~8-10s)");
 
     ticker = setInterval(function () {
       var s = Math.round((Date.now() - started) / 1000);
-      setStatus("Analyzing… " + s + "s (a live run usually takes ~60-70s)");
+      setStatus("Analyzing… " + s + "s (usually ~8-10s)");
     }, 1000);
 
     var form = new FormData();
@@ -167,7 +88,7 @@
         var msg = (err && err.name === "AbortError")
           ? "Request timed out after " + Math.round(TIMEOUT_MS / 1000) + "s."
           : (err && err.message) ? err.message : String(err);
-        setStatus("Failed: " + msg + "  — is the backend running?  Try:  python run.py", "err");
+        setStatus("Failed: " + msg + "  — is the backend running?  Try:  start_stable.bat", "err");
       })
       .then(function () {
         clearTimeout(timer);
@@ -220,6 +141,3 @@
     setStatus("Done — HTTP " + status + ".", "ok");
   }
 })();
-</script>
-</body>
-</html>

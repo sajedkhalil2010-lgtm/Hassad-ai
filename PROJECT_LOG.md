@@ -11,6 +11,8 @@
 | Item | Value |
 |---|---|
 | Project root | `C:\Users\user\Desktop\حصاد v1` |
+| Backend code | `حصاد v1\backend\` — Python package, owns `.env` |
+| Frontend code | `حصاد v1\frontend\` — `index.html` + `css/` + `js/` |
 | Python | 3.14.7 |
 | Web framework | FastAPI 0.143.0 + Uvicorn 0.54.0 |
 | Groq SDK | **`groq` 1.7.0** (OpenAI-compatible chat completions) |
@@ -63,23 +65,36 @@ Security properties, all covered by the offline test suite:
 ## 3. System structure
 
 ```
-حصاد v1/
-├── .env                        # GEMINI_API_KEY (git-ignored)
-├── .env.example                # clean committed template
-├── .gitignore                  # secrets + python + uploads + logs
-├── main.py                     # FastAPI app: CORS, /health, /api/v1/analyze
-├── requirements.txt
-├── PROJECT_LOG.md              # this file
-├── agents/
-│   ├── __init__.py             # public surface: the 3 agents + AgentError
-│   ├── base.py                 # AgentError / AgentResult / coercion / JSON / image utils
-│   ├── config.py               # Settings — the single-key source of truth
-│   ├── diagnostic_agent.py     # vision pathology via Gemini
-│   ├── advisor_agent.py        # Tébessa-localized advisory (Gemini + local KB)
-│   └── supervisor_agent.py     # orchestration, error policy, JSON contract
-└── tests/
-    ├── test_offline.py         # 66 checks — no network, no key
-    └── test_sdk_shape.py       # 63 checks — real google-genai APIError mapping
+حصاد v1/                          <- project root (git, launchers, docs)
+├── .gitignore                    # secrets + python + uploads + logs
+├── PROJECT_LOG.md                # this file
+├── start.bat                     # dev launcher  -> python run.py
+├── start_stable.bat              # prod launcher -> uvicorn main:app (no reload)
+├── backend/                      # ALL Python lives here; cwd for every run
+│   ├── .env                      # GROQ_API_KEY (git-ignored, never committed)
+│   ├── .env.example              # clean committed template
+│   ├── main.py                   # FastAPI app: CORS, /health, /analyze, /chat, UI route
+│   ├── run.py                    # preflight + supervisor + port probe
+│   ├── requirements.txt
+│   ├── agents/
+│   │   ├── __init__.py           # public surface: 4 agents + AgentError
+│   │   ├── base.py               # AgentError / AgentResult / coercion / JSON / image utils
+│   │   ├── config.py             # Settings — the single-key source of truth
+│   │   ├── diagnostic_agent.py   # vision pathology via Groq (qwen3.8-27b)
+│   │   ├── advisor_agent.py      # Tébessa-localized advisory (Groq + local KB)
+│   │   ├── chat_agent.py         # conversational agronomist (groq-20b)
+│   │   └── supervisor_agent.py   # orchestration, error policy, JSON contract
+│   └── tests/                    # run as: python -m tests.<name> from backend/
+│       ├── test_offline.py       # 77 checks — no network, no key
+│       ├── test_sdk_shape.py     # 93 checks — real groq APIError mapping
+│       ├── test_quota_retry.py   # 33 checks — 429 backoff policy
+│       ├── test_chat_agent.py    # 109 checks — chat contract + trust boundary
+│       ├── test_ui.py            # 31 checks — page + split assets + guards
+│       └── test_e2e.py           # live, opt-in
+└── frontend/                     # served by FastAPI, never imported
+    ├── index.html                # markup only, no inline <style>/<script>
+    ├── css/styles.css            # mounted at /assets/css/styles.css
+    └── js/app.js                 # mounted at /assets/js/app.js
 ```
 
 ### 3a. `agents/base.py` — shared contracts
@@ -180,10 +195,10 @@ integration is proven by shape and by constructing genuine
 ## 5. Running it
 
 ```bash
-cd "C:\Users\user\Desktop\حصاد v1"
+cd "C:\Users\user\Desktop\حصاد v1\backend"     # every command runs from here
 
-# 1. put your real key in .env
-#    GEMINI_API_KEY=AIza...
+# 1. put your real key in backend/.env
+#    GROQ_API_KEY=gsk_...
 
 # 2. (optional) create an isolated environment
 python -m venv .venv
@@ -194,8 +209,8 @@ pip install -r requirements.txt
 python -m tests.test_offline
 python -m tests.test_sdk_shape
 
-# 4. run
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
+# 4. run  (or double-click start_stable.bat at the project root)
+uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 Then `POST` an image:
@@ -235,21 +250,28 @@ curl -X POST "http://127.0.0.1:8000/api/v1/analyze" -F "file=@leaf.jpg"
 | 23 | 2026-10-21 | **Gemini → Groq migration (full backend switch).** `google-genai` removed from `requirements.txt`, `groq` 1.7.0 added. `Settings` now exposes `groq_api_key` (SecretStr), `vision_model`, `advisor_model`; `gemini_model`/`gemini_api_key`/`gemini_temperature`/`gemini_max_output_tokens` are gone. **Model IDs checked against Groq's live deprecation page before coding** — the requested `llama-3.2-11b-vision-preview` has been **shut down since 2025-04-14** and would have failed every call, so vision runs **`qwen/qwen3.8-27b`** (the only production Groq vision model, and it supports JSON mode) per user decision; advisor initially kept the user's explicit choice `llama-3.3-70b-versatile` **(superseded by entry 24 — the id proved to be already retired, not merely scheduled)**, which carries a 2026-08-16 deprecation notice — so a `NotFoundError` (404) is now classified **non-retryable** and tells the operator exactly which config field to change, instead of looping. **Both agents rewritten** to `client.chat.completions.create(...)` with `response_format={"type":"json_object"}`; the vision call encodes the pre-normalised JPEG as `data:image/jpeg;base64,...` inside an `image_url` part. Clients are built with **`max_retries=0`** so Groq's own internal retries cannot stack under `run_with_quota_retry` (3×3 calls). `is_quota_error()` now reads **`status_code`** — Groq sets neither `.code` nor `.status`, so the old detector would have matched nothing and silently disabled the retry. `_classify_sdk_error` maps Groq's subclasses (`RateLimitError`/`AuthenticationError`/`NotFoundError`/`APITimeoutError`). Diagnosis output gains the frontend key **`recommendations`** (always non-empty). Arabic quota message made provider-neutral (it previously named Gemini). `run.py` module probe, `/health` (`provider`, both models) and `requirements.txt` updated. **Suite 222** (77 offline / 93 sdk-shape / 33 quota-retry / 19 ui), all green. `.env` now carries `GROQ_API_KEY`; its shipped placeholder is rejected via substring markers so a `gsk_`-prefixed sample value cannot masquerade as a real key. |
 | 24 | 2026-10-21 | **Live credential verification + advisor model corrected.** With a real `GROQ_API_KEY` in `.env`, `client.models.list()` returned **11 models** and settled what the docs could not: `llama-3.3-70b-versatile` is **absent from the account and returns model-not-found** — already retired, not merely scheduled. Groq's own models page still listed it as Production, so a doc-only check is provably insufficient here. Vision was confirmed live (`qwen/qwen3.8-27b` AVAILABLE) and the pipeline already ran end-to-end on it. Four available text models were then tested against the advisory's real requirement (`response_format=json_object`) — all four produced valid JSON: `openai/gpt-oss-120b` (2958 ms), `openai/gpt-oss-20b` (816 ms), `qwen/qwen3.8-27b` (508 ms), `allam-2-7b` (415 ms). **Advisor set to `openai/gpt-oss-120b`** per user decision — highest reasoning quality, chosen because advisory output includes pesticide dosages where accuracy is safety-relevant, and +2 s is negligible beside the vision call. **New startup preflight** `run.py::check_models()` (step **[4/5]**) probes the live models endpoint for both configured ids and names the exact config field to fix — this is what would have caught the retired id at launch rather than via an e2e run. Deliberately **non-blocking**: offline/timeout/auth failures degrade to a warning, because the advisor retains its local-KB fallback and a hard dependency here would make the server unlaunchable without internet. **Launcher crash fixed** (pre-existing, surfaced by redirecting output): `run.py` printed `PROJECT_ROOT` — a path containing the Arabic folder name — to a stdout defaulting to **cp1252**, dying with `UnicodeEncodeError` on a `print` the moment output went to a file or pipe; stdout/stderr are now reconfigured to UTF-8 with `errors="replace"`. `main.py` needed no change (FastAPI serializes JSON as UTF-8). **Leak test fixed:** `test_e2e.py` still asserted on `"AQ.Ab8"`, the *Gemini* key prefix — post-migration it would have passed even if the live Groq key were returned verbatim; it now checks the actual configured secret plus a 12-char prefix too short to be satisfied by any masked form (`gsk_...L3A9`). **Live end-to-end, both stages on Groq:** `Early blight` / اللفحة المبكرة, confidence 0.92, `Advisory source: groq`, advisory grounded on Tébessa, HTTP 200, no key in body. Diagnostic 1994 ms + advisor 5743 ms = **7.7 s** total (Gemini's single stage ran ~30 s). Suite still **222** green. |
 | 25 | 2026-10-21 | **Chat agent (`/api/v1/chat`) — interactive agronomist.** New `agents/chat_agent.py`: one conversational turn, JSON-mode, reusing the existing single-key Groq client pattern, the `AgentResult`/`AgentError` envelope and `run_with_quota_retry`. **The requested `llama-3.3-70b-versatile` was rejected on live evidence** — a direct call returned HTTP 404 ("does not exist or you do not have access to it") and the id is absent from `models.list()`: the same retired id the advisor hit. Chat therefore defaults to **`openai/gpt-oss-20b`** (~0.8–2.0 s measured) rather than the heavier `-120b` (~3.0 s), because a farmer is sitting there typing. `Settings` gained `chat_model`, `max_chat_chars` (2000) and `max_chat_history` (12); `check_models()` now probes all three ids at startup. **Trust boundary** — the client is not trusted: history is role-whitelisted (`user`/`assistant` only, so a spoofed `system` turn is dropped), content is truncated, and the oldest turns are discarded; the optional `diagnosis` context copies only whitelisted scalars and never the raw payload, so a caller cannot smuggle instructions into the prompt (tested against an `instructions` / `IGNORE ALL PREVIOUS INSTRUCTIONS` payload). **Deliberately no KB fallback** — unlike the advisor, whose questions are a closed set, inventing an answer to "how much copper do I spray on my olives?" is worse than admitting the outage, so failures return an honest retryable error. The system prompt grounds the model as an Algerian steppe agronomist (local crops, steppe constraints, Tuta absoluta / bayoud / rusts), requires mirroring the farmer's language, forbids inventing Algerian registrations, and always defers label and pre-harvest-interval confirmation to the DPA. **Bug caught by the new tests:** `ask()` called `_normalise()` unguarded, and because `_normalise` raises when the model omits `reply`, an upstream oddity escaped as a bare exception — a 500 traceback instead of a structured failure, breaking the "never raises" contract the other agents keep; now guarded, with an HTTP-level regression test. **One error envelope** — FastAPI's default 422 is `{"detail": [...]}`, a second shape the chat UI would have to special-case, so a `RequestValidationError` handler now emits `{ok:false, error:{kind:"input", message, retryable:false}}` with a readable field-named message (`history.0.role: Input should be 'user' or 'assistant'`). The route is a sync `def`, so FastAPI runs the blocking Groq call in its threadpool instead of stalling the event loop the way the existing `async def analyze` does. **Suite 331** (+109 in the new `tests/test_chat_agent.py`). Live-verified: English and Arabic turns, multi-turn follow-up (`history_turns: 2`), diagnosis-context grounding, and an analyze re-run for regression (`Advisory source: groq`). |
+| 26 | 2026-10-21 | **Project restructured into `backend/` + `frontend/`.** All Python (`main.py`, `run.py`, `requirements.txt`, `agents/`, `tests/`) moved under `backend/`; the UI moved out of `static/` into `frontend/` and was split into `index.html` + `css/styles.css` + `js/app.js`. **`.env` moved *with* the code to `backend/.env`** so `config.py`'s existing `parent.parent / ".env"` resolution still lands on it unchanged - no path logic was forked - and the move was a byte copy verified by SHA-256 before and after (`EF0EBD81...9015`, 141 bytes), since the key cannot be reconstructed if lost. `FRONTEND_DIR` is derived from `__file__`, never the cwd, and the directory is mounted at `/assets`, so `main.py` stays correct no matter where uvicorn is started; `/` still returns index.html via an explicit route with a pinned charset. Both launchers now `pushd` into `backend\` (probing `backend\.venv` first, then a root `.venv`) - that is what keeps `main:app` and the `agents` package resolving. `test_ui.py` grew **19 -> 31 checks**, adding assertions that the split assets serve with the right content types and that `/assets/../main.py` (and its URL-encoded form) return 404 without leaking backend source. Suite **343** (77 offline / 93 sdk-shape / 33 quota-retry / 109 chat / 31 ui), all green; every tracked file was moved with `git mv` so history follows. Live-verified on the restarted server: `/` 200 with no inline `<style>`/`<script>`, both assets 200, `/health` reporting all three models with the key still masked (`gsk_...L3A9`), and chat turns returning 200 (`history_turns: 2`, `latency_ms` 1216-1942). **Follow-up surfaced by that live run:** a single transient Groq 400 was classified by `chat_agent.py:169` as `kind="input"`, `retryable=False`, so the farmer saw "The chat request was rejected by the model." - yet the identical payload succeeded on all later attempts. Upstream 400s are being reported as caller fault and marked non-retryable; not changed here, since it alters the tested error contract. |
 
 ## 7. Launching
 
 ```bash
-cd "C:\Users\user\Desktop\حصاد v1"
+# one click, either launcher from the project root:
+start_stable.bat               # prod: uvicorn directly, port 8000, no --reload
+start.bat                      # dev:  python run.py, probes a free port
 
-# one click (double-click start.bat), or:
+# explicitly, from backend\:
+cd "C:\Users\user\Desktop\حصاد v1\backend"
 python run.py                 # port 8000, opens browser
 python run.py --no-open       # port 8000, no browser
 python run.py --port 8010     # pick a specific port
 python run.py --open-docs     # open /docs instead of /health
 
-# manual equivalent
+# manual equivalent (must run from backend\)
 python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
+
+Both launchers `pushd` into `backend\` themselves, so `main:app` and the
+`agents` package resolve correctly regardless of where they were started from.
 
 `run.py` prints the exact URLs on startup:
 
@@ -260,9 +282,11 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000
   Analyze POST: http://127.0.0.1:8000/api/v1/analyze
 ```
 
-Opening `http://127.0.0.1:8000` loads the lightweight single-file test UI
-(`static/index.html`): pick a leaf image, press **Analyze**, and read the
-diagnosis, the Tébessa advisory and the full supervisor JSON.
+Opening `http://127.0.0.1:8000` loads the lightweight test UI
+(`frontend/index.html`, with its CSS/JS split out under `frontend/css` and
+`frontend/js` and served at `/assets/*`): pick a leaf image, press
+**Analyze**, and read the diagnosis, the Tébessa advisory and the full
+supervisor JSON.
 
 If port 8000 is occupied it reports the occupying PID and auto-selects the
 next free port, so the printed URL is always the one that actually works.

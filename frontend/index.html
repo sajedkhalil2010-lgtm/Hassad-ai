@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hassad AI — Quick Test</title>
+<!-- inline empty favicon so browsers don't 404 -->
+<link rel="icon" href="data:,">
+<!-- Absolute paths: the backend mounts the frontend directory at /assets.
+     Using root-absolute URLs keeps them correct regardless of the page's
+     own path, and they are unaffected by any ?api= override below. -->
+<link rel="stylesheet" href="/assets/css/styles.css">
+</head>
+<body>
+  <h1>Hassad AI — Quick Test</h1>
+  <p class="sub">Single-image end-to-end test against the local backend ·
+     <a href="/docs">/docs</a> · <a href="/health">/health</a></p>
+
+  <div class="card">
+    <label for="file">Leaf image</label>
+    <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/bmp,image/tiff">
+    <img id="preview" class="hidden" alt="Selected leaf image preview">
+    <button id="analyze" disabled>Analyze</button>
+    <div id="status">Choose an image to begin.</div>
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="card">
+      <label>Summary</label>
+      <div class="summary" id="summary"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Diagnostic response</h2>
+      <pre id="diagnosis">{}</pre>
+      <h2>Advisor response</h2>
+      <pre id="advisory">{}</pre>
+      <h2>Supervisor response (full report)</h2>
+      <pre id="supervisor">{}</pre>
+    </div>
+  </div>
+
+<!-- Loaded at the end of body so the elements above exist first. -->
+<script src="/assets/js/app.js"></script>
+</body>
+</html>

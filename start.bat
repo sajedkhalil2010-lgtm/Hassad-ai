@@ -10,16 +10,19 @@ setlocal
 chcp 65001 >nul
 title Hassad AI - Backend
 
-REM Always run from THIS folder, wherever the .bat was double-clicked from.
-pushd "%~dp0"
+REM Always run from the BACKEND folder, wherever the .bat was double-clicked
+REM from, so "run.py" and "agents" resolve from backend\.
+pushd "%~dp0backend"
 set "PYTHONIOENCODING=utf-8"
 
 REM --- Prefer the project venv if one exists, else fall back to PATH python --
 set "PYLAUNCHER=python"
+if exist "%~dp0backend\.venv\Scripts\python.exe" set "PYLAUNCHER=%~dp0backend\.venv\Scripts\python.exe"
 if exist "%~dp0.venv\Scripts\python.exe" set "PYLAUNCHER=%~dp0.venv\Scripts\python.exe"
 
 echo.
-echo   Project : %CD%
+echo   Project : %~dp0
+echo   Backend : %CD%
 echo   Python  : %PYLAUNCHER%
 echo.
 

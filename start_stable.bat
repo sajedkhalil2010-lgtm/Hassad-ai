@@ -14,13 +14,18 @@ setlocal
 chcp 65001 >nul
 title Hassad AI - Stable Server (port 8000)
 
-REM Always run from THIS folder, wherever the .bat was double-clicked from.
-REM This also guarantees "main:app" and "agents" resolve from THIS project.
-pushd "%~dp0"
+REM Always run from the BACKEND folder, wherever the .bat was double-clicked
+REM from. This is what makes "main:app" and "agents" resolve correctly now
+REM that the Python code lives under backend\ and the UI under frontend\.
+pushd "%~dp0backend"
 set "PYTHONIOENCODING=utf-8"
+set "PROJECT_DIR=%~dp0"
 
 REM --- Prefer the project venv if one exists, else fall back to PATH python --
+REM Checks backend\.venv first (requirements.txt now lives there), then a
+REM venv at the project root for anyone who made one before the restructure.
 set "PYLAUNCHER=python"
+if exist "%~dp0backend\.venv\Scripts\python.exe" set "PYLAUNCHER=%~dp0backend\.venv\Scripts\python.exe"
 if exist "%~dp0.venv\Scripts\python.exe" set "PYLAUNCHER=%~dp0.venv\Scripts\python.exe"
 
 REM --- Warn if port 8000 is already taken (avoids a confusing bind error) ----
@@ -42,7 +47,8 @@ echo   ============================================================
 echo      HASSAD AI  -  stable server
 echo   ============================================================
 echo.
-echo     Project  :  %CD%
+echo     Project  :  %PROJECT_DIR%
+echo     Backend  :  %CD%
 echo     Python   :  %PYLAUNCHER%
 echo     App      :  main:app
 echo     Port     :  8000      (no --reload, no auto-restart)

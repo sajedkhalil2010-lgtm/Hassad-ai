@@ -7,9 +7,9 @@ Exposes::
     POST /api/v1/analyze    upload a leaf image -> full supervisor report
     POST /api/v1/chat       one conversational turn with the agronomist
 
-Run from the project root::
+Run from ``backend/`` (or use ``start_stable.bat`` from the project root)::
 
-    uvicorn main:app --reload
+    uvicorn main:app
 """
 
 from __future__ import annotations
@@ -22,14 +22,16 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agents import AgentError, ChatAgent, SupervisorAgent, Settings, get_settings
 
-#: Resolved from THIS file, not the cwd, so the page loads even when uvicorn
-#: is started from a different working directory.
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-INDEX_HTML = STATIC_DIR / "index.html"
+#: Resolved from THIS file, never the cwd: the frontend lives outside the
+#: backend package (one level up), so the page and its assets load no matter
+#: where uvicorn was started from.
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+INDEX_HTML = FRONTEND_DIR / "index.html"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -121,11 +123,17 @@ def create_app(
         allow_headers=["*"],
     )
 
+    # Serve the split frontend assets (css/js) at /assets/*. index.html is
+    # returned by the explicit "/" route below with a pinned charset; this
+    # mount handles everything else. Mounting the directory delegates
+    # path-traversal protection to Starlette instead of hand-rolling it.
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="frontend")
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         """Serve the lightweight single-file test UI."""
         if not INDEX_HTML.is_file():
-            raise HTTPException(status_code=404, detail="Test UI not found (static/index.html).")
+            raise HTTPException(status_code=404, detail="Test UI not found (frontend/index.html).")
         return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
 
     @app.get("/health", tags=["system"])

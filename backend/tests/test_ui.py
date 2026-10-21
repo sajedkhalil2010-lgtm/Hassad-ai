@@ -28,7 +28,7 @@ def main() -> int:
     client = TestClient(create_app(isolated))
 
     print("\n=== Test UI at '/' ===")
-    check("static/index.html exists on disk", INDEX_HTML.is_file(), str(INDEX_HTML))
+    check("frontend/index.html exists on disk", INDEX_HTML.is_file(), str(INDEX_HTML))
 
     r = client.get("/")
     check("GET / -> 200", r.status_code == 200, f"got {r.status_code}")
@@ -38,13 +38,32 @@ def main() -> int:
     html = r.text
     check("has file input", 'type="file"' in html)
     check("has Analyze button", ">Analyze<" in html)
-    check("posts to /api/v1/analyze", "/api/v1/analyze" in html)
     check("has diagnosis container", 'id="diagnosis"' in html)
     check("has advisory container", 'id="advisory"' in html)
     check("has supervisor container", 'id="supervisor"' in html)
     check("declares utf-8 charset meta", '<meta charset="utf-8">' in html)
+    check("links the stylesheet", "/assets/css/styles.css" in html)
+    check("links the script", "/assets/js/app.js" in html)
+    check("stylesheet kept out of the document", "<style" not in html)
+    check("script kept out of the document", "<script>" not in html)
     check("no external CDN/dependencies", "http://" not in html.replace("http://127.0.0.1", "")
           and "https://cdn" not in html and "//cdn" not in html)
+
+    print("\n=== Split assets under /assets ===")
+    css = client.get("/assets/css/styles.css")
+    check("GET /assets/css/styles.css -> 200", css.status_code == 200, f"got {css.status_code}")
+    check("stylesheet is text/css", "text/css" in css.headers.get("content-type", ""))
+    check("stylesheet non-empty", len(css.text) > 500, f"{len(css.text)} chars")
+
+    js = client.get("/assets/js/app.js")
+    check("GET /assets/js/app.js -> 200", js.status_code == 200, f"got {js.status_code}")
+    check("script is javascript", "javascript" in js.headers.get("content-type", ""))
+    check("script posts to /api/v1/analyze", "/api/v1/analyze" in js.text)
+    check("script non-empty", len(js.text) > 500, f"{len(js.text)} chars")
+
+    check("unknown asset -> 404", client.get("/assets/nope.css").status_code == 404)
+    check("traversal does not expose backend source",
+          client.get("/assets/../main.py").status_code != 200)
 
     print("\n=== Other endpoints unaffected ===")
     h = client.get("/health")
