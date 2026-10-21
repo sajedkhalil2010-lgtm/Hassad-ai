@@ -280,6 +280,98 @@ def parse_model_json(raw: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Image helpers
 # ---------------------------------------------------------------------------
+# HTTP error classification — shared by every agent
+# ---------------------------------------------------------------------------
+
+#: Substrings that make an HTTP 400 genuinely the caller's fault on a vision
+#: upload. Groq emits 400 for far more than a bad image — a malformed
+#: ``response_format``, an over-long context, or a transient upstream fault —
+#: so the status code on its own can never justify blaming the farmer's photo.
+#: Each of these words appears only in a message about the image payload
+#: itself; "boom", "invalid json" or an empty message match none of them.
+_MEDIA_REJECTION_MARKERS = (
+    "image", "media", "base64", "data uri", "data:image",
+    "content type", "content-type", "decode", "jpeg", "jpg", "png", "webp",
+    "tiff", "bmp", "attachment",
+)
+
+
+def is_media_rejection(message: str) -> bool:
+    """True when an upstream 400 explicitly complains about the uploaded bytes."""
+    lowered = (message or "").lower()
+    return any(marker in lowered for marker in _MEDIA_REJECTION_MARKERS)
+
+
+def classify_http_error(
+    exc: BaseException,
+    *,
+    media: bool = False,
+    model_not_found: str | None = None,
+) -> AgentError:
+    """Map a Groq HTTP error onto our stable failure taxonomy.
+
+    One function for every agent so the copies cannot drift — they already
+    had, and that drift is what hid the bug below in two of three agents.
+
+    Groq exposes the HTTP status as ``status_code`` (not ``.code``), and
+    offers finer-grained subclasses; we read both.
+
+    ``media=True`` marks a vision call. Only then — and only when the upstream
+    message actually names the image — may a 400 be attributed to the
+    uploaded bytes. Every other 400 is an upstream fault and stays retryable:
+    a live run once returned a transient 400 for a payload that succeeded
+    seconds later, and reporting that as "your photo is broken, do not
+    retry" sent the farmer down the wrong road entirely.
+    """
+    code = getattr(exc, "status_code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    name = type(exc).__name__
+    message = str(getattr(exc, "message", "") or exc)
+
+    if code in (401, 403) or name in ("AuthenticationError", "PermissionDeniedError"):
+        return AgentError("auth", "Groq rejected the API key (invalid or forbidden).", retryable=False)
+
+    if code == 429 or name == "RateLimitError":
+        return AgentError(
+            "quota",
+            QUOTA_MESSAGE_AR,
+            retryable=True,
+            message_en=QUOTA_MESSAGE_EN,
+        )
+
+    if code == 404 or name == "NotFoundError":
+        # A retired/unavailable model. Retrying cannot fix this, and it is
+        # exactly the failure mode that bit us with Gemini's retired model.
+        return AgentError(
+            "api",
+            model_not_found or f"Model not found on Groq ({name}).",
+            detail=message[:160],
+            retryable=False,
+        )
+
+    if code == 400 or name == "BadRequestError":
+        if media and is_media_rejection(message):
+            return AgentError(
+                "input",
+                "The image payload was rejected by the vision model.",
+                detail=message[:160],
+                retryable=False,
+            )
+        return AgentError(
+            "busy",
+            "The model rejected the request; this is usually brief — please retry.",
+            detail=message[:160],
+            retryable=True,
+        )
+
+    if name in ("APIConnectionError", "APITimeoutError") or code in (408, 500, 502, 503, 504):
+        return AgentError("busy", "Groq service is temporarily unavailable.", detail=message[:160], retryable=True)
+
+    return AgentError("api", f"Groq call failed ({code}).", detail=message[:160], retryable=True)
+
+
+# ---------------------------------------------------------------------------
 
 _MIME_BY_MAGIC = (
     (b"\xff\xd8\xff", "image/jpeg"),
@@ -324,7 +416,7 @@ def normalise_image_bytes(data: bytes, max_side: int = 1600, declared_mime: str 
         raise AgentError("input", "Unsupported file type. Please upload a JPEG, PNG or WebP image.", retryable=False)
 
     try:
-        from PIL import Image, UnidentifiedImageError
+        from PIL import Image, ImageOps, UnidentifiedImageError
     except ImportError:  # pragma: no cover - Pillow is a hard dependency
         return data, mime
 
@@ -338,6 +430,15 @@ def normalise_image_bytes(data: bytes, max_side: int = 1600, declared_mime: str 
                 mime = "image/png"
             elif fmt == "WEBP":
                 mime = "image/webp"
+
+            # Cameras record orientation in EXIF rather than rotating the
+            # pixels, so a portrait photo arrives sideways. Skipping this
+            # asked the model to diagnose a leaf lying on its side - the most
+            # common phone-upload variant there is. `format` is read above
+            # because the transposed copy no longer carries it.
+            transposed = ImageOps.exif_transpose(image)
+            if transposed is not None:
+                image = transposed
 
             rgba_like = mime in {"image/png", "image/webp", "image/tiff"}
             if rgba_like and image.mode in {"RGBA", "LA", "P"}:
@@ -375,6 +476,8 @@ __all__ = [
     "as_str",
     "as_str_list",
     "clamp01",
+    "classify_http_error",
+    "is_media_rejection",
     "is_quota_error",
     "normalise_image_bytes",
     "parse_model_json",

@@ -12,6 +12,7 @@ import sys
 import httpx
 from PIL import Image
 
+import agents.base as base_mod
 import agents.diagnostic_agent as diag_mod
 import agents.advisor_agent as adv_mod
 from groq import APIStatusError
@@ -184,7 +185,9 @@ def main():
         (401, "auth", False),
         (403, "auth", False),
         (429, "quota", True),
-        (400, "input", False),
+        # "boom" names no image, so this400 is upstream, not the farmer's
+        # photo. Blaming the upload here was the bug fixed this session.
+        (400, "busy", True),
         (404, "api", False),      # retired model -> never retry
         (500, "busy", True),
         (503, "busy", True),
@@ -206,6 +209,51 @@ def main():
     check("404 names the config field to fix",
           r404.ok is False and "vision_model" in r404.error.message,
           f"got {r404.error.message if r404.error else None!r}")
+
+    print("\n=== C1b. A 400 is the farmer's fault only when it names the image ===")
+    # This is the defect the shared classifier exists to fix. Groq emits 400
+    # for transient upstream faults too; reporting those as "your photo is
+    # broken, do not retry" sent the farmer down the wrong road entirely.
+    #
+    # Both lists below are WORDING OBSERVED FROM LIVE GROQ RESPONSES, not
+    # invented: a probe against the real API produced "invalid base64 url" for
+    # a corrupt image and these exact strings for faults that have nothing to
+    # do with the farmer's photo.
+    # NOTE on what is deliberately absent: an empty image part returns
+    # "'messages.0' : for 'role:user' the following must be satisfied[...]",
+    # which only reads as media because the truncated tail mentions
+    # image_url. Snippets of that message do NOT match, so it is left to the
+    # retryable branch - correct anyway, since that error means our own
+    # request builder is broken, never the farmer's photo.
+    media_messages = (
+        "invalid base64 url",
+        "Invalid image_url: could not decode base64",
+        "Unsupported media type provided",
+        "Invalid content type image/webp",
+    )
+    for msg in media_messages:
+        r = diag_mod.DiagnosticAgent(cfg, client=RecordingClient(raise_exc=groq_error(400, msg))).analyze(make_png())
+        check(f"400 naming media -> input, non-retryable ({msg[:32]})",
+              r.ok is False and r.error.kind == "input" and r.error.retryable is False,
+              f"got {r.error.kind if r.error else 'ok'}")
+
+    upstream_messages = (
+        "boom",
+        "",
+        "'response_format' : one of the following must be satisfied",
+        "`max_tokens` has type number -5, but it should be a positive integer",
+        "'temperature' : number must be at most 2",
+        "'stop' : one of the following must be satisfied",
+    )
+    for msg in upstream_messages:
+        r = diag_mod.DiagnosticAgent(cfg, client=RecordingClient(raise_exc=groq_error(400, msg))).analyze(make_png())
+        check(f"400 not naming media -> busy, retryable ({msg[:32] or '(empty)'})",
+              r.ok is False and r.error.kind == "busy" and r.error.retryable is True,
+              f"got {r.error.kind if r.error else 'ok'}")
+
+    check("is_media_rejection() matches only media wording",
+          all(base_mod.is_media_rejection(m) for m in media_messages)
+          and not any(base_mod.is_media_rejection(m) for m in upstream_messages))
 
     print("\n=== C2. HTTP 429 returns the friendly Arabic message ===")
     exc429 = groq_error(429, "rate_limit_error")

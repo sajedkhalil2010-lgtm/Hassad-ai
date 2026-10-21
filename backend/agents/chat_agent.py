@@ -36,14 +36,13 @@ from typing import Any
 from groq import APIError as GroqAPIError
 
 from .base import (
-    QUOTA_MESSAGE_AR,
-    QUOTA_MESSAGE_EN,
     AgentError,
     AgentResult,
     as_dict,
     as_str,
     as_str_list,
     clamp01,
+    classify_http_error,
     parse_model_json,
     run_with_quota_retry,
 )
@@ -138,38 +137,22 @@ class ChatAgent:
 
     @staticmethod
     def _classify_sdk_error(exc: BaseException) -> AgentError:
-        """Map a Groq API error onto the shared failure taxonomy.
+        """Delegate to the shared classifier in ``base``.
 
-        Mirrors the other agents: Groq reports HTTP status via ``status_code``
-        (never ``.code``), and a retired model id (404) must not be retried.
+        This closes the defect logged in entry 26: a transient Groq 400 used
+        to be reported to the farmer as "The chat request was rejected by the
+        model" with ``retryable=False``, even though the identical payload
+        succeeded moments later. The chat route carries no image and no
+        caller-controlled media, so a 400 is never the farmer's fault — it
+        now stays retryable.
         """
-        code = getattr(exc, "status_code", None)
-        if code is None:
-            code = getattr(exc, "code", None)
-        name = type(exc).__name__
-        message = str(getattr(exc, "message", "") or exc)
-
-        if code in (401, 403) or name in ("AuthenticationError", "PermissionDeniedError"):
-            return AgentError("auth", "Groq rejected the API key.", retryable=False)
-        if code == 429 or name == "RateLimitError":
-            return AgentError(
-                "quota",
-                QUOTA_MESSAGE_AR,
-                retryable=True,
-                message_en=QUOTA_MESSAGE_EN,
-            )
-        if code == 404 or name == "NotFoundError":
-            return AgentError(
-                "api",
-                f"Chat model not found on Groq ({name}). Set CHAT_MODEL in .env to a model your account serves.",
-                detail=message[:160],
-                retryable=False,
-            )
-        if code == 400 or name == "BadRequestError":
-            return AgentError("input", "The chat request was rejected by the model.", detail=message[:160], retryable=False)
-        if name in ("APIConnectionError", "APITimeoutError") or code in (408, 500, 502, 503, 504):
-            return AgentError("busy", "Groq service is temporarily unavailable.", detail=message[:160], retryable=True)
-        return AgentError("api", f"Groq chat call failed ({code}).", detail=message[:160], retryable=True)
+        return classify_http_error(
+            exc,
+            model_not_found=(
+                f"Chat model not found on Groq ({type(exc).__name__}). "
+                "Set CHAT_MODEL in .env to a model your account serves."
+            ),
+        )
 
     # -- input hygiene (client-supplied text is untrusted) ------------------
 

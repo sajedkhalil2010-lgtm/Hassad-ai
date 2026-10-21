@@ -249,7 +249,9 @@ def main() -> int:
         (401, "auth", False),
         (403, "auth", False),
         (429, "quota", True),
-        (400, "input", False),
+        # Closes entry 26's open issue: a chat 400 is never the farmer's
+        # input (there is no media on this route), so it stays retryable.
+        (400, "busy", True),
         (404, "api", False),      # retired model -> never retry
         (500, "busy", True),
         (503, "busy", True),

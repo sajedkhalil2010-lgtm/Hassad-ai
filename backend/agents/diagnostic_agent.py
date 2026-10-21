@@ -23,8 +23,6 @@ from typing import Any
 from groq import APIError as GroqAPIError
 
 from .base import (
-    QUOTA_MESSAGE_AR,
-    QUOTA_MESSAGE_EN,
     AgentError,
     AgentResult,
     as_dict,
@@ -32,6 +30,7 @@ from .base import (
     as_str,
     as_str_list,
     clamp01,
+    classify_http_error,
     normalise_image_bytes,
     parse_model_json,
     run_with_quota_retry,
@@ -125,41 +124,21 @@ class DiagnosticAgent:
 
     @staticmethod
     def _classify_sdk_error(exc: BaseException) -> AgentError:
-        """Map a Groq API error onto our stable failure taxonomy.
+        """Delegate to the shared classifier in ``base``.
 
-        Groq exposes the HTTP status as ``status_code`` (not ``.code``), and
-        offers finer-grained subclasses; we read both so a retired model
-        (404) is reported as non-retryable instead of being looped on.
+        ``media=True`` is the only thing that permits a 400 to be blamed on
+        the uploaded bytes — and only when the upstream message actually
+        names the image. Every other 400 stays retryable, because Groq
+        emits 400 for transient upstream faults as well.
         """
-        code = getattr(exc, "status_code", None)
-        if code is None:
-            code = getattr(exc, "code", None)
-        name = type(exc).__name__
-        message = str(getattr(exc, "message", "") or exc)
-
-        if code in (401, 403) or name in ("AuthenticationError", "PermissionDeniedError"):
-            return AgentError("auth", "Groq rejected the API key (invalid or forbidden).", retryable=False)
-        if code == 429 or name == "RateLimitError":
-            return AgentError(
-                "quota",
-                QUOTA_MESSAGE_AR,
-                retryable=True,
-                message_en=QUOTA_MESSAGE_EN,
-            )
-        if code == 404 or name == "NotFoundError":
-            # A retired/unavailable model. Retrying cannot fix this, and it is
-            # exactly the failure mode that bit us with Gemini's retired model.
-            return AgentError(
-                "api",
-                f"Vision model not found on Groq ({name}). Update `vision_model` in agents/config.py.",
-                detail=message[:160],
-                retryable=False,
-            )
-        if code == 400 or name == "BadRequestError":
-            return AgentError("input", "The image payload was rejected by the vision model.", detail=message[:160], retryable=False)
-        if name in ("APIConnectionError", "APITimeoutError") or code in (408, 500, 502, 503, 504):
-            return AgentError("busy", "Groq service is temporarily unavailable.", detail=message[:160], retryable=True)
-        return AgentError("api", f"Groq vision call failed ({code}).", detail=message[:160], retryable=True)
+        return classify_http_error(
+            exc,
+            media=True,
+            model_not_found=(
+                f"Vision model not found on Groq ({type(exc).__name__}). "
+                "Update `vision_model` in agents/config.py."
+            ),
+        )
 
     # -- public API --------------------------------------------------------
 

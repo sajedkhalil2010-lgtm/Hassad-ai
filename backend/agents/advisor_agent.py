@@ -20,13 +20,12 @@ from typing import Any
 from groq import APIError as GroqAPIError
 
 from .base import (
-    QUOTA_MESSAGE_AR,
-    QUOTA_MESSAGE_EN,
     AgentError,
     AgentResult,
     as_dict,
     as_str,
     as_str_list,
+    classify_http_error,
     parse_model_json,
     run_with_quota_retry,
 )
@@ -271,36 +270,20 @@ class AdvisorAgent:
 
     @staticmethod
     def _classify_sdk_error(exc: BaseException) -> AgentError:
-        """Map a Groq API error onto the shared failure taxonomy.
+        """Delegate to the shared classifier in ``base``.
 
-        Mirrors DiagnosticAgent's classifier: Groq reports HTTP status via
-        ``status_code``, and 404 (retired model) must NOT be retried.
+        ``media`` stays False: this agent sends text only, so a 400 can never
+        be the farmer's fault. Before this was unified, this file simply had
+        no 400 branch and fell through to a retryable error — correct by
+        accident, and divergent from its two siblings.
         """
-        code = getattr(exc, "status_code", None)
-        if code is None:
-            code = getattr(exc, "code", None)
-        name = type(exc).__name__
-        message = str(getattr(exc, "message", "") or exc)
-
-        if code in (401, 403) or name in ("AuthenticationError", "PermissionDeniedError"):
-            return AgentError("auth", "Groq rejected the API key.", retryable=False)
-        if code == 429 or name == "RateLimitError":
-            return AgentError(
-                "quota",
-                QUOTA_MESSAGE_AR,
-                retryable=True,
-                message_en=QUOTA_MESSAGE_EN,
-            )
-        if code == 404 or name == "NotFoundError":
-            return AgentError(
-                "api",
-                f"Advisor model not found on Groq ({name}). Update `advisor_model` in agents/config.py.",
-                detail=message[:160],
-                retryable=False,
-            )
-        if name in ("APIConnectionError", "APITimeoutError") or code in (408, 500, 502, 503, 504):
-            return AgentError("busy", "Groq service temporarily unavailable.", detail=message[:160], retryable=True)
-        return AgentError("api", f"Groq advisory call failed ({code}).", detail=message[:160], retryable=True)
+        return classify_http_error(
+            exc,
+            model_not_found=(
+                f"Advisor model not found on Groq ({type(exc).__name__}). "
+                "Update `advisor_model` in agents/config.py."
+            ),
+        )
 
     # -- public API --------------------------------------------------------
 
