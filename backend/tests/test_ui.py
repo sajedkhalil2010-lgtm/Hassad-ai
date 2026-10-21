@@ -123,15 +123,28 @@ def main() -> int:
     check("stylesheet is text/css", "text/css" in css.headers.get("content-type", ""))
     check("stylesheet non-empty", len(css.text) > 2000, f"{len(css.text)} chars")
     for token, label in (
-        ("#0f766e", "teal accent"),
-        ("#047857", "emerald accent"),
-        ("#f8fafc", "off-white background"),
-        ("#1e293b", "charcoal text"),
+        # The palette IS the redesign, so it is asserted rather than implied:
+        # a near-black field (never #000 — pure black makes the emerald edges
+        # read as if floating in a void), an emerald signal ramp, and light
+        # ink. The old light-theme tokens are deliberately absent.
+        ("#040d0a", "near-black field"),
+        ("#10b981", "emerald signal"),
+        ("#059669", "deep emerald"),
+        ("#e8f2ee", "light ink"),
     ):
         check(f"palette includes {label} ({token})", token in css.text)
+    # Scoped to the --bg token on purpose: the PRINT block deliberately sets
+    # black text on white paper, which is a different medium, not a palette
+    # lapse.
+    check("screen field is not pure black", not re.search(r"--bg:\s*#0{3,6}\b", css.text))
     check("defines Tajawal for Arabic", "Tajawal" in css.text)
     check("defines Plus Jakarta Sans for Latin", "Plus Jakarta Sans" in css.text)
-    check("ships a dark theme", "prefers-color-scheme: dark" in css.text)
+    # Dark is the design, not a mode: the field token sets it outright. Assert
+    # that rather than a media query, which no longer applies.
+    check("field is dark by design, not by media query",
+          "--bg:" in css.text and "#040d0a" in css.text
+          and "background: var(--bg)" in css.text)
+    check("glass surfaces are translucent", "backdrop-filter" in css.text)
     check("honours reduced motion", "prefers-reduced-motion: reduce" in css.text)
     check("responds to narrow viewports", "@media (max-width" in css.text)
     check("no CSS framework imported", "@import" not in css.text and "tailwind" not in css.text.lower())

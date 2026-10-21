@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<!-- The interface is dark by design, not by preference: the emerald signal
+     only reads correctly against a dark field. Declaring it here stops the
+     browser painting a white canvas behind the first frame. -->
+<meta name="color-scheme" content="dark">
 <meta name="description" content="Hassad AI — crop-leaf diagnosis and localized agronomic advice for the Tébessa region of Algeria.">
 <title>حَصاد AI · Hassad AI</title>
 
@@ -33,7 +36,7 @@
 
     <a class="brand" href="/">
       <span class="brand__mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round">
           <path d="M11 20A7 7 0 0 1 4 13c0-5 4-9 16-9 0 12-4 16-9 16Z"/>
           <path d="M4.5 19.5 11 13"/>
@@ -72,7 +75,7 @@
 <main class="workspace" id="workspace">
 
   <!-- ---------- Diagnostic ------------------------------------------- -->
-  <section class="panel panel--work" aria-labelledby="work-title">
+  <section class="panel" aria-labelledby="work-title">
 
     <header class="panel__head">
       <div class="panel__lead">
@@ -117,6 +120,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                stroke-linecap="round"><path d="M6 6 18 18M18 6 6 18"/></svg>
         </button>
+        <!-- Five bars plus a sweeping highlight, shown only while a request is
+             in flight. Their presence IS the "being read" indicator, so no
+             extra text is needed to explain what is happening. -->
+        <div class="drop__wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       </figure>
     </div>
 
@@ -130,22 +137,73 @@
       </p>
     </div>
 
-    <!-- Results. The structured grid is the product; the raw payloads stay
-         available underneath for anyone who needs to see exactly what the
+    <!-- Results. The verdict carries two gauges and the badges; everything
+         agronomic sits beneath it as breakdown cards. The raw payloads stay
+         one disclosure away for anyone who needs to see exactly what the
          backend returned. -->
     <section class="results hidden" id="results" aria-live="polite">
 
-      <div class="summary" id="summary"></div>
+      <div class="verdict glass glass--glow" id="summary">
 
-      <div class="detail">
-        <div class="detail__col">
-          <h3 class="detail__title">Observed symptoms</h3>
+        <div class="rings">
+          <div class="ring-wrap">
+            <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+              <circle class="ring__track" cx="50" cy="50" r="44"/>
+              <circle class="ring__value" cx="50" cy="50" r="44" id="ring-confidence" style="--p: 0"/>
+            </svg>
+            <div class="ring__center">
+              <span class="ring__num" id="conf-num">0</span>
+              <span class="ring__unit">Confidence</span>
+            </div>
+          </div>
+
+          <div class="ring-wrap ring-wrap--sev">
+            <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+              <circle class="ring__track" cx="50" cy="50" r="44"/>
+              <circle class="ring__value" cx="50" cy="50" r="44" id="ring-severity" style="--p: 0"/>
+            </svg>
+            <div class="ring__center">
+              <span class="ring__num" id="sev-num">0</span>
+              <span class="ring__unit">Leaf affected</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="verdict__facts">
+          <div class="badges" id="badges"></div>
+          <p class="verdict__crop" id="verdict-crop"></p>
+          <p class="verdict__ar" id="verdict-ar" lang="ar" dir="rtl"></p>
+        </div>
+
+      </div>
+
+      <div class="breakdown">
+
+        <article class="card glass">
+          <h3 class="card__title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/>
+              <circle cx="12" cy="12" r="2.6"/>
+            </svg>
+            Observed symptoms
+          </h3>
           <ul class="ticks" id="symptoms"></ul>
-        </div>
-        <div class="detail__col">
-          <h3 class="detail__title">Agronomic guidance</h3>
+        </article>
+
+        <article class="card glass">
+          <h3 class="card__title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 21v-8"/>
+              <path d="M12 13a5 5 0 0 0 5-5c0-2.5-2.5-4-5-4S7 5.5 7 8a5 5 0 0 0 5 5Z"/>
+              <path d="M8 21h8"/>
+            </svg>
+            Agronomic guidance
+          </h3>
           <div id="advisory-body"></div>
-        </div>
+        </article>
+
       </div>
 
       <details class="disclose">
@@ -209,7 +267,7 @@
      aria-labelledby="auth-modal-title">
   <div class="modal__backdrop" data-close></div>
 
-  <div class="modal__panel" id="auth-card">
+  <div class="modal__panel glass" id="auth-card">
 
     <header class="modal__head">
       <h2 id="auth-modal-title">Your account</h2>

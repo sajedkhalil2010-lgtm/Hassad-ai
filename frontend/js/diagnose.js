@@ -34,6 +34,13 @@ export function initDiagnose({ onResult } = {}) {
     status: $("status"),
     results: $("results"),
     summary: $("summary"),
+    ringConfidence: $("ring-confidence"),
+    ringSeverity: $("ring-severity"),
+    confNum: $("conf-num"),
+    sevNum: $("sev-num"),
+    badges: $("badges"),
+    verdictCrop: $("verdict-crop"),
+    verdictAr: $("verdict-ar"),
     symptoms: $("symptoms"),
     advisoryBody: $("advisory-body"),
     diagnosis: $("diagnosis"),
@@ -62,6 +69,8 @@ export function initDiagnose({ onResult } = {}) {
     els.analyze.disabled = next || !picked;
     show(els.analyzeSpin, next);
     els.analyzeText.textContent = next ? "Analyzing…" : "Analyze";
+    // Drives the wave and the sweeping highlight over the preview.
+    els.dropzone.classList.toggle("is-uploading", next);
   }
 
   /* ---------------------------------------------------------- preview --- */
@@ -93,7 +102,16 @@ export function initDiagnose({ onResult } = {}) {
     show(els.previewWrap, true);
     els.dropzone.classList.add("has-image");
 
-    setStatus("Ready to analyze.", null);
+    // A verdict already on screen describes the PREVIOUS leaf. Leaving it
+    // fully lit while a new photo sits in the preview invites the farmer to
+    // read the old diagnosis as the new one, so it is dimmed and the status
+    // line says plainly that it is stale.
+    if (!els.results.classList.contains("hidden")) {
+      els.summary.classList.add("is-stale");
+      setStatus("Ready to analyze. The verdict below is from the previous image.", "warn");
+    } else {
+      setStatus("Ready to analyze.", null);
+    }
     setBusy(false);
     els.analyze.focus({ preventScroll: true });
   }
@@ -117,55 +135,65 @@ export function initDiagnose({ onResult } = {}) {
 
   /* --------------------------------------------------------- rendering -- */
 
-  function tile(label, valueNode, severity) {
-    const node = el("div", "tile");
+  function badge(text, kind, severity) {
+    const node = el("span", kind);
+    node.append(el("span", "badge__dot"), document.createTextNode(text));
     if (severity) node.setAttribute("data-sev", severity);
-    node.append(el("div", "tile__k", label), valueNode);
     return node;
   }
 
-  function renderSummary(report) {
+  /** The verdict block: two gauges, the badge row, and the two prose lines. */
+  function renderVerdict(report) {
     const d = report.diagnosis || {};
     const overall = (report.confidence && report.confidence.overall) ?? d.confidence ?? 0;
-    const severity = SEVERITIES.includes(d.severity) ? d.severity : "moderate";
     const confidence = pct(overall);
+    const provisional = Boolean(
+      d.low_confidence || (report.confidence && report.confidence.provisional),
+    );
+    const severity = SEVERITIES.includes(d.severity) ? d.severity : "moderate";
+    const severityPct = typeof d.severity_pct === "number" ? pct(d.severity_pct) : 0;
 
-    clear(els.summary);
+    // A CSS transition only fires when the value CHANGES, so a second
+    // analysis landing on the same figure would leave a dead, static ring.
+    // Clearing both gauges first guarantees the sweep runs every time.
+    els.ringConfidence.style.setProperty("--p", "0");
+    els.ringSeverity.style.setProperty("--p", "0");
+    requestAnimationFrame(() => {
+      els.ringConfidence.style.setProperty("--p", String(confidence));
+      els.ringSeverity.style.setProperty("--p", String(severityPct));
+    });
 
-    // Crop
-    const crop = el("div", "tile__v", d.crop || "Unknown");
-    if (d.pathogen && d.pathogen !== "-") crop.append(el("small", null, d.pathogen));
-    els.summary.append(tile("Crop", crop));
+    // Tone is carried separately from the value, so an amber read is
+    // visible without altering the figure it describes.
+    if (provisional) els.ringConfidence.setAttribute("data-tone", "low");
+    else els.ringConfidence.removeAttribute("data-tone");
+    els.confNum.textContent = String(confidence);
 
-    // Disease — Latin line then the Arabic name, right-aligned in Tajawal.
-    const disease = el("div", "tile__v", d.disease || "Unknown");
-    if (d.disease_ar) disease.append(ar("tile__ar", d.disease_ar));
-    els.summary.append(tile("Diagnosis", disease, severity));
+    els.ringSeverity.setAttribute("data-sev", severity);
+    els.sevNum.textContent = String(severityPct);
 
-    // Severity
-    const sevValue = el("div", "tile__v");
-    const chip = el("span", "chip");
-    chip.append(el("span", "chip__dot"), document.createTextNode(d.severity || "unknown"));
-    sevValue.append(chip);
-    if (typeof d.severity_pct === "number") {
-      sevValue.append(el("small", "tile__num", `${pct(d.severity_pct)}% of leaf affected`));
+    clear(els.badges);
+    if (d.crop) els.badges.append(badge(d.crop, "badge badge--crop"));
+    if (d.disease) els.badges.append(badge(d.disease, "badge badge--dis"));
+    els.badges.append(badge(severity, "badge badge--sev", severity));
+    if (report.status) els.badges.append(badge(report.status, "badge badge--status"));
+    // Worth showing only when it explains something: a poor photo behind a
+    // low-confidence read is exactly what the farmer needs told.
+    if (d.image_quality && !["usable", "good"].includes(d.image_quality)) {
+      els.badges.append(badge(`Image: ${d.image_quality}`, "badge"));
     }
-    els.summary.append(tile("Severity", sevValue, severity));
 
-    // Confidence — the supervisor's overall figure, with a meter.
-    const confValue = el("div", "tile__v tile__num", `${confidence}%`);
-    const meter = el("div", "meter");
-    const fill = el("div", "meter__fill");
-    fill.style.width = `${confidence}%`;
-    if (d.low_confidence || (report.confidence && report.confidence.provisional)) {
-      fill.setAttribute("data-band", "low");
-    }
-    meter.append(fill);
-    confValue.append(meter);
-    els.summary.append(tile("Confidence", confValue, severity));
+    const cropLine = d.crop
+      ? (d.pathogen && d.pathogen !== "-" ? `${d.crop} · ${d.pathogen}` : d.crop)
+      : "";
+    els.verdictCrop.textContent = cropLine;
+    show(els.verdictCrop, Boolean(cropLine));
 
-    // Image quality
-    els.summary.append(tile("Image", el("div", "tile__v", d.image_quality || "usable")));
+    els.verdictAr.textContent = d.disease_ar || "";
+    show(els.verdictAr, Boolean(d.disease_ar));
+
+    // This verdict now describes the leaf currently in the preview.
+    els.summary.classList.remove("is-stale");
   }
 
   function renderSymptoms(diagnosis) {
@@ -272,7 +300,7 @@ export function initDiagnose({ onResult } = {}) {
   }
 
   function render(report) {
-    renderSummary(report);
+    renderVerdict(report);
     renderSymptoms(report.diagnosis || {});
     renderGuidance(report);
     renderRaw(report);

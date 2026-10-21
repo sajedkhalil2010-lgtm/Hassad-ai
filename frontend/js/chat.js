@@ -64,8 +64,18 @@ export function initChat({ getContext } = {}) {
     }
   }
 
+  /* The three bubble variants, held as data rather than interpolated into a
+     template literal. An unknown kind then falls back to the bot style
+     instead of rendering an unstyled div, and the class names stay
+     something the stylesheet can be checked against statically. */
+  const BUBBLE_CLASS = {
+    user: "bubble bubble--user",
+    bot: "bubble bubble--bot",
+    err: "bubble bubble--err",
+  };
+
   function bubble(kind, text) {
-    const node = el("div", `bubble bubble--${kind}`);
+    const node = el("div", BUBBLE_CLASS[kind] || BUBBLE_CLASS.bot);
     // pre-wrap keeps the farmer's line breaks; textContent keeps it inert.
     node.textContent = text;
     els.log.append(node);

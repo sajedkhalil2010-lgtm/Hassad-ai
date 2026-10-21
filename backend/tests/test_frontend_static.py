@@ -1,10 +1,14 @@
 """Static verification of the frontend modules.
 
-A static test cannot prove the page renders, but it can prove the three ways
+A static test cannot prove the page renders, but it can prove the four ways
 a module rewrite actually breaks in practice:
   1. an import naming a file that does not exist,
   2. an import naming a symbol the target does not export,
-  3. a $() lookup for an element id that is not in the markup.
+  3. a $() lookup for an element id that is not in the markup,
+  4. a class emitted by the markup or a module with no rule behind it.
+
+Item 4 matters because it fails silently: nothing throws and nothing errors,
+the farmer just gets an unstyled block where a card should be.
 
 Plus a brace/paren balance pass, which catches the fat-fingered syntax error
 that would otherwise take the whole page down with no visible symptom.
@@ -187,6 +191,54 @@ def main() -> int:
         referenced.update(re.findall(r'querySelector(?:All)?\(\s*["\']#([\w-]+)', src))
     unwired = sorted(WIRABLE - referenced)
     check("every interactive control is wired up", not unwired, str(unwired))
+
+    print("\n=== every class applied is styled ===")
+    # A module can go on emitting a class after its rule was deleted, and
+    # nothing throws — the farmer simply sees an unstyled block. Two tiers,
+    # because they carry very different precision:
+    #
+    #   A. Tokens written where a class name is unambiguous. Any miss is a
+    #      real defect.
+    #   B. BEM compounds (`__` / `--`) anywhere in a JS string. These reach
+    #      the DOM through helpers the tier-A patterns cannot see into —
+    #      badge(text, "badge badge--crop") is the live case. Requiring a BEM
+    #      separator is what separates a class from hyphenated English such
+    #      as "decision-support", which is otherwise indistinguishable.
+    js_all = "\n".join(modules.values())
+
+    tier_a = set(html_classes)
+    for cls in re.findall(r'el\(\s*"[a-z0-9]+"\s*,\s*"([^"]*)"', js_all):
+        tier_a.update(cls.split())
+    for fn in ("add", "remove", "toggle", "contains"):
+        for call in re.findall(rf'classList\.{fn}\(\s*"([^"]+)"', js_all):
+            tier_a.update(call.split())
+    for call in re.findall(r'\.className\s*=\s*"([^"]*)"', js_all):
+        tier_a.update(call.split())
+    tier_a.discard("")
+
+    strings = " ".join(a or b
+                       for a, b in re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', js_all))
+    # Not every compound string is a class. Ids handed to $(), attribute
+    # names, and values compared against data all share the shape.
+    ids = set(html_ids) | set(ID_RE.findall(js_all))
+    ids.update(re.findall(r'getElementById\(\s*"([^"]+)"\s*\)', js_all))
+    attrs = set(re.findall(r'\[([\w-]+)[\]=~^$*|]', css))
+    attrs.update(re.findall(r'setAttribute\(\s*"([^"]+)"', js_all))
+    data_values = set(re.findall(r'===\s*"([^"]+)"', js_all))
+    data_values.update(re.findall(r'"([^"]+)"\s*===', js_all))
+
+    tier_b = {t for t in re.findall(r'[a-z][\w-]*(?:__|--)[\w-]+', strings)
+              if t not in ids and t not in attrs and t not in data_values
+              and not t.startswith(("--", "data-", "aria-"))}
+
+    unstyled_a = sorted(c for c in tier_a if c not in css_classes)
+    check("every class written in a class position is styled",
+          not unstyled_a, f"unstyled: {unstyled_a}")
+    unstyled_b = sorted(c for c in tier_b if c not in css_classes)
+    check("every compound class token in the modules is styled",
+          not unstyled_b, f"unstyled: {unstyled_b}")
+    print(f"       ({len(tier_a)} class-position tokens, {len(tier_b)} compounds, "
+          f"{len(css_classes)} rules defined)")
 
     print(f"\n{'='*52}\nTOTAL: {PASS} passed, {FAIL} failed\n{'='*52}")
     return 1 if FAIL else 0
