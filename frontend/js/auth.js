@@ -1,18 +1,23 @@
 /* =========================================================================
    Account dialog — sign in / create account / sign out / admin listing.
 
-   Exposes initAuth({onChange}) so the shell can react to a session appearing
-   or disappearing without this module reaching back into it.
+   Exposes initAuth({onChange, onGuest}) so the shell can react to a session
+   appearing or disappearing without this module reaching back into it.
 
-   The dialog has two faces: signed-out (tabs + form) and signed-in (identity
-   + sign out). Clicking the header trigger opens whichever matches the
-   current session, which keeps "where do I sign out?" to a single place.
+   The dialog has two faces: signed-out (tabs + form + guest route) and
+   signed-in (identity). The sidebar profile card is the trigger, which keeps
+   "where do I sign out?" in exactly one place.
+
+   The guest route matters: diagnosis never requires an account, so the
+   dialog has to offer a way past itself. Without it the login wall becomes
+   a toll gate on a tool that works fine anonymously.
    ========================================================================= */
 
 import { call, getToken, setToken } from "./api.js";
 import { $ } from "./dom.js";
+import { t } from "./i18n.js";
 
-export function initAuth({ onChange } = {}) {
+export function initAuth({ onChange, onGuest } = {}) {
   const els = {
     modal: $("auth-modal"),
     title: $("auth-modal-title"),
@@ -28,13 +33,20 @@ export function initAuth({ onChange } = {}) {
     submit: $("auth-submit"),
     submitText: document.querySelector("#auth-submit .btn__text"),
     status: $("auth-status"),
+    guest: $("auth-guest"),
+    // Sidebar profile card
     who: $("auth-who"),
     meta: $("auth-meta"),
     avatar: $("auth-avatar"),
-    adminView: $("auth-admin-view"),
-    adminOut: $("admin-output"),
     trigger: $("account-trigger"),
     triggerLabel: $("account-label"),
+    // Dialog identity face
+    identityAvatar: $("auth-identity-avatar"),
+    identityEmail: $("auth-identity-email"),
+    identityMeta: $("auth-identity-meta"),
+    adminView: $("auth-admin-view"),
+    adminOut: $("admin-output"),
+    logout: $("auth-logout"),
   };
 
   let user = null;
@@ -59,8 +71,8 @@ export function initAuth({ onChange } = {}) {
     els.tabRegister.setAttribute("aria-selected", String(registering));
 
     els.nameField.classList.toggle("hidden", !registering);
-    els.submitText.textContent = registering ? "Create account" : "Sign in";
-    els.title.textContent = registering ? "Create your account" : "Sign in";
+    els.submitText.textContent = registering ? t("create_account") : t("sign_in");
+    els.title.textContent = registering ? t("create_account") : t("sign_in");
 
     // Asking a password manager to save a new password is a different
     // request from filling an existing one; getting this wrong is why some
@@ -75,21 +87,35 @@ export function initAuth({ onChange } = {}) {
 
     els.signedIn.classList.toggle("hidden", !signedIn);
     els.signedOut.classList.toggle("hidden", signedIn);
-
     els.trigger.setAttribute("data-signed-in", String(signedIn));
-    els.triggerLabel.textContent = signedIn ? user.email : "Sign in";
-    els.trigger.setAttribute("aria-label", signedIn ? `Account: ${user.email}` : "Sign in");
+    // Signing out is meaningless without a session, so the control is
+    // removed rather than left to fail silently when pressed.
+    els.logout.classList.toggle("hidden", !signedIn);
 
     if (signedIn) {
-      els.title.textContent = "Your account";
-      els.who.textContent = user.email;
-      els.avatar.textContent = (user.email || "?").trim().charAt(0);
-      els.meta.textContent = user.is_admin ? "Administrator · local account" : "Local account";
-      // Only admins ever see the listing button; it is not merely hidden by
-      // CSS, so a non-admin cannot discover it in the markup either.
+      const name = user.name || user.email;
+      const role = user.is_admin ? t("role_admin") : t("role_farmer");
+      const initial = (user.email || "?").trim().charAt(0);
+
+      els.who.textContent = name;
+      els.meta.textContent = role;
+      els.avatar.textContent = initial;
+      els.identityAvatar.textContent = initial;
+      els.identityEmail.textContent = user.email;
+      els.identityMeta.textContent = role;
+
       els.adminView.classList.toggle("hidden", !user.is_admin);
       els.adminOut.classList.add("hidden");
+      els.title.textContent = t("account_t");
+    } else {
+      els.who.textContent = t("role_guest");
+      els.meta.textContent = t("local_account");
+      els.avatar.textContent = "؟";
     }
+
+    const label = signedIn ? `Account: ${user.email}` : t("sign_in");
+    els.trigger.setAttribute("aria-label", label);
+    els.triggerLabel.textContent = label;
 
     if (onChange) onChange(user);
   }
@@ -112,6 +138,12 @@ export function initAuth({ onChange } = {}) {
     setStatus("");
     if (lastFocused && typeof lastFocused.focus === "function") lastFocused.focus();
     lastFocused = null;
+  }
+
+  /** Past the dialog and into the workspace without an account. */
+  function enterAsGuest() {
+    close();
+    if (onGuest) onGuest();
   }
 
   /* ------------------------------------------------------------- calls -- */
@@ -173,7 +205,6 @@ export function initAuth({ onChange } = {}) {
     els.password.value = "";
     render();
     close();
-    setStatus("Signed out.", "ok");
   }
 
   /** Re-attach to an existing session, or fall back to the signed-out face. */
@@ -228,8 +259,8 @@ export function initAuth({ onChange } = {}) {
   els.tabRegister.addEventListener("click", () => setMode("register"));
   els.form.addEventListener("submit", submit);
   els.adminView.addEventListener("click", showUsers);
-
-  document.querySelector("#auth-logout").addEventListener("click", signOut);
+  els.guest.addEventListener("click", enterAsGuest);
+  $("auth-logout").addEventListener("click", signOut);
 
   els.modal.addEventListener("click", (event) => {
     if (event.target.closest("[data-close]")) close();
@@ -238,6 +269,12 @@ export function initAuth({ onChange } = {}) {
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || els.modal.classList.contains("hidden")) return;
     close();
+  });
+
+  // Role labels are translated, so repaint them when the language flips.
+  document.addEventListener("hassad:lang", () => {
+    setMode(mode);
+    render();
   });
 
   // Keep tabbing inside the dialog while it is modal — without this, focus
@@ -266,6 +303,7 @@ export function initAuth({ onChange } = {}) {
     getUser: () => user,
     open,
     close,
+    enterAsGuest,
     refresh: restoreSession,
   };
 }

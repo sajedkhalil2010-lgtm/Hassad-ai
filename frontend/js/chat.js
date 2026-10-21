@@ -13,6 +13,7 @@
 
 import { call } from "./api.js";
 import { $, clear, el, show } from "./dom.js";
+import { t } from "./i18n.js";
 
 /** Backend caps history at 40 turns; stay comfortably under it. */
 const MAX_TURNS = 24;
@@ -47,13 +48,7 @@ export function initChat({ getContext } = {}) {
   function makeIntro() {
     const node = el("div", "bubble bubble--bot");
     node.id = "chat-empty";
-    node.append(
-      el(
-        "p",
-        null,
-        "Ask a question to begin. Answers are decision-support for the Tébessa region — confirm anything involving a phytosanitary product with the DPA or the Chambre d'Agriculture.",
-      ),
-    );
+    node.append(el("p", null, t("chat_intro")));
     return node;
   }
 

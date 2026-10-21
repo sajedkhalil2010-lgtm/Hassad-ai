@@ -14,7 +14,8 @@ PASS = 0
 FAIL = 0
 
 #: ES modules the page loads. app.js is the entry; it imports the rest.
-MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js", "app.js")
+MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
+           "i18n.js", "history.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
@@ -79,7 +80,12 @@ def main() -> int:
     check("has results grid", 'id="summary"' in html)
     check("has symptoms list", 'id="symptoms"' in html)
     check("has guidance container", 'id="advisory-body"' in html)
-    check("raw payloads are behind a disclosure", "<details" in html and "<summary>Raw responses</summary>" in html)
+    # The <details>/<summary> STRUCTURE is what matters, not the label: the
+    # summary text is translated at runtime, so asserting the English literal
+    # would test the wrong thing the moment the language flips.
+    check("raw payloads are behind a disclosure",
+          "<details" in html and "<summary" in html
+          and 'id="diagnosis"' in html.split("<details", 1)[-1])
 
     print("\n=== Assistant panel ===")
     check("has message log", 'id="messages"' in html)
@@ -106,12 +112,29 @@ def main() -> int:
     check("no Google sign-in integration", not leaked, f"found {leaked}")
     check("passwords are not auto-submitted insecurely", 'autocomplete="current-password"' in html)
 
+    print("\n=== Landing page + shell ===")
+    # The page is one document with two stages. Both must be present in the
+    # served markup: the landing is what a visitor sees, and the dashboard
+    # must already be in the DOM (hidden, not unmounted) so its module wiring
+    # survives the transition without a reload.
+    check("landing stage present", 'id="landing"' in html)
+    check("dashboard stage present", 'id="app"' in html)
+    check("Arabic is the default direction", '<html lang="ar" dir="rtl">' in html)
+    check("landing hero title present", 'class="hero__title"' in html)
+    check("landing product mockup present", 'class="mock"' in html)
+    check("sidebar navigation present", 'class="sidebar"' in html)
+    check("metrics grid present", 'id="metric-total"' in html)
+    check("recent diagnoses list present", 'id="recent-list"' in html)
+    check("floating assistant dialog present", 'id="chat-modal"' in html)
+    check("guest route offered (auth is never a toll gate)", 'id="auth-guest"' in html)
+    check("no inline event handlers", " onclick=" not in html and " onload=" not in html)
+
     print("\n=== Typefaces ===")
     # Requested faces, loaded as progressive enhancement: display=swap means
     # text paints immediately in the fallback stack, so a slow or absent
     # connection costs the typeface and nothing else.
     check("requests Tajawal", "Tajawal" in html)
-    check("requests Plus Jakarta Sans", "Plus+Jakarta+Sans" in html)
+    check("requests IBM Plex Sans Arabic", "IBM+Plex+Sans+Arabic" in html)
     check("font stylesheet uses display=swap", "display=swap" in html)
     check("preconnects to the font host", 'rel="preconnect"' in html)
     # The document must still be fully readable if those two links never load.
@@ -123,13 +146,14 @@ def main() -> int:
     check("stylesheet is text/css", "text/css" in css.headers.get("content-type", ""))
     check("stylesheet non-empty", len(css.text) > 2000, f"{len(css.text)} chars")
     for token, label in (
-        # The palette IS the redesign, so it is asserted rather than implied:
-        # a near-black field (never #000 — pure black makes the emerald edges
-        # read as if floating in a void), an emerald signal ramp, and light
-        # ink. The old light-theme tokens are deliberately absent.
-        ("#040d0a", "near-black field"),
+        # The palette IS the design, so it is asserted rather than implied:
+        # an obsidian field (never #000 — pure black makes the emerald edges
+        # read as if floating in a void), an eerie-green panel, a neon
+        # emerald signal ramp, and light ink.
+        ("#070f0c", "obsidian field"),
+        ("#0a1410", "eerie green panel"),
         ("#10b981", "emerald signal"),
-        ("#059669", "deep emerald"),
+        ("#22c55e", "neon emerald"),
         ("#e8f2ee", "light ink"),
     ):
         check(f"palette includes {label} ({token})", token in css.text)
@@ -138,12 +162,18 @@ def main() -> int:
     # lapse.
     check("screen field is not pure black", not re.search(r"--bg:\s*#0{3,6}\b", css.text))
     check("defines Tajawal for Arabic", "Tajawal" in css.text)
-    check("defines Plus Jakarta Sans for Latin", "Plus Jakarta Sans" in css.text)
+    check("defines IBM Plex Sans Arabic", "IBM Plex Sans Arabic" in css.text)
     # Dark is the design, not a mode: the field token sets it outright. Assert
     # that rather than a media query, which no longer applies.
     check("field is dark by design, not by media query",
-          "--bg:" in css.text and "#040d0a" in css.text
+          "--bg:" in css.text and "#070f0c" in css.text
           and "background: var(--bg)" in css.text)
+    # The light theme is real, but it must not be able to reach the workspace:
+    # it is gated to .landing only, so the tested dark workspace cannot be
+    # silently given a second variant nobody maintains.
+    check("light theme is scoped to the landing page",
+          'body[data-theme="light"] .landing' in css.text
+          and not re.search(r'body\[data-theme="light"\]\s+\.app\b', css.text))
     check("glass surfaces are translucent", "backdrop-filter" in css.text)
     check("honours reduced motion", "prefers-reduced-motion: reduce" in css.text)
     check("responds to narrow viewports", "@media (max-width" in css.text)

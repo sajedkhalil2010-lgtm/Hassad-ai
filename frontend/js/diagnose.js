@@ -11,6 +11,8 @@
 
 import { call } from "./api.js";
 import { $, ar, bytes, clear, el, pct, show } from "./dom.js";
+import { addRecord } from "./history.js";
+import { t } from "./i18n.js";
 
 /** Mirrors the backend's default max_image_bytes (8 MB). The server is
  *  authoritative — this guard just avoids a pointless upload. */
@@ -79,11 +81,14 @@ export function initDiagnose({ onResult } = {}) {
     if (!file) return;
 
     if (!file.type || !file.type.startsWith("image/")) {
-      setStatus("That is not an image file. Use JPEG, PNG, WEBP, BMP or TIFF.", "err");
+      setStatus(t("st_notimg"), "err");
       return;
     }
     if (file.size > MAX_BYTES) {
-      setStatus(`That image is ${bytes(file.size)}. The maximum is ${bytes(MAX_BYTES)}.`, "err");
+      setStatus(
+        t("st_big").replace("{size}", bytes(file.size)).replace("{max}", bytes(MAX_BYTES)),
+        "err",
+      );
       return;
     }
 
@@ -108,9 +113,9 @@ export function initDiagnose({ onResult } = {}) {
     // line says plainly that it is stale.
     if (!els.results.classList.contains("hidden")) {
       els.summary.classList.add("is-stale");
-      setStatus("Ready to analyze. The verdict below is from the previous image.", "warn");
+      setStatus(t("st_stale"), "warn");
     } else {
-      setStatus("Ready to analyze.", null);
+      setStatus(t("st_ready"), null);
     }
     setBusy(false);
     els.analyze.focus({ preventScroll: true });
@@ -129,7 +134,7 @@ export function initDiagnose({ onResult } = {}) {
     show(els.idle, true);
     els.dropzone.classList.remove("has-image");
 
-    setStatus("Choose an image to begin.", null);
+    setStatus(t("st_pick"), null);
     setBusy(false);
   }
 
@@ -313,7 +318,7 @@ export function initDiagnose({ onResult } = {}) {
     if (!picked || busy) return;
 
     setBusy(true);
-    setStatus("Reading the leaf… this usually takes several seconds.", "busy");
+    setStatus(t("st_analyzing"), "busy");
 
     const form = new FormData();
     form.append("file", picked, picked.name || "leaf");
@@ -322,13 +327,16 @@ export function initDiagnose({ onResult } = {}) {
       const report = await call("/api/v1/analyze", { method: "POST", formData: form });
       lastReport = report;
       render(report);
+      // A compact record lands in localStorage so the dashboard's metrics and
+      // recent list show real figures. Never the image, never the payload.
+      addRecord(report);
       const ms = report.timing && report.timing.total_ms;
-      setStatus(ms ? `Done in ${(ms / 1000).toFixed(1)} s.` : "Done.", "ok");
+      setStatus(ms ? `${t("st_done")} (${(ms / 1000).toFixed(1)} s)` : t("st_done"), "ok");
       if (onResult) onResult(report);
     } catch (err) {
       // The envelope already carries a farmer-readable sentence, so it is
       // shown verbatim rather than translated into a status code.
-      setStatus(err && err.message ? err.message : "Analysis failed.", "err");
+      setStatus(err && err.message ? err.message : t("st_error"), "err");
     } finally {
       setBusy(false);
     }
@@ -388,7 +396,19 @@ export function initDiagnose({ onResult } = {}) {
 
   els.analyze.addEventListener("click", analyze);
 
+  // A language flip re-reads the verdict in the new script rather than
+  // leaving it stranded in whichever language produced it.
+  document.addEventListener("hassad:lang", () => {
+    if (lastReport) renderVerdict(lastReport);
+    if (!picked) setStatus(t("st_pick"), null);
+  });
+
   return {
+    /** Put the farmer back at the upload control — used by "New diagnosis". */
+    focusDropzone() {
+      els.dropzone.focus({ preventScroll: false });
+    },
+
     /** Compact, whitelisted view of the last diagnosis, for chat context. */
     getContext() {
       const d = lastReport && lastReport.diagnosis;

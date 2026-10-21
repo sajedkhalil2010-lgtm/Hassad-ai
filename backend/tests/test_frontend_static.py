@@ -106,9 +106,15 @@ def main() -> int:
     css_classes = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
 
     modules = {p.name: p.read_text(encoding="utf-8") for p in sorted(JS.glob("*.js"))}
-    check("all six modules are present on disk",
-          set(modules) == {"api.js", "dom.js", "auth.js", "diagnose.js", "chat.js", "app.js"},
-          str(sorted(modules)))
+    # A superset check, not equality: the entry point legitimately grows new
+    # modules as the app does. What matters is that every module the page
+    # depends on is actually there — the import-resolution pass below then
+    # proves each one resolves to a real export.
+    CORE_MODULES = {"api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
+                    "i18n.js", "history.js", "app.js"}
+    check("all core modules are present on disk",
+          CORE_MODULES <= set(modules),
+          f"missing {sorted(CORE_MODULES - set(modules))}")
 
     print("\n=== syntax balance ===")
     for name, src in modules.items():

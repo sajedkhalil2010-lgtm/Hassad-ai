@@ -40,6 +40,9 @@ export function show(node, visible) {
 
 export const $ = (id) => document.getElementById(id);
 
+/** All matches for a selector, as a real array. */
+export const $all = (sel) => [...document.querySelectorAll(sel)];
+
 /** Safe number formatting: never renders NaN to a farmer's screen. */
 export function pct(value) {
   const n = Number(value);
