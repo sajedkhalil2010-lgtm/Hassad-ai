@@ -324,6 +324,18 @@ All rights reserved. Part of the Hassad AI evaluation submission.
 
 ---
 
+## 👥 Creators & Authors
+
+**Hassad AI (حَصاد AI)** was designed, engineered and delivered by:
+
+- **Khalil Sayada**
+- **Mohamed Ayoub Hennane**
+
+From the platform architecture — the multi-agent vision pipeline, the
+deterministic bilingual routing, the confidence floor that prevents false
+positives, and the offline-first SQLite auth — through to the Arabic-first
+glassmorphic interface, the work in this repository is theirs.
+
 <p align="center">
   <b>حَصاد AI</b> · Hassad AI<br/>
   <sub>Built for Algerian smallholder farmers · Tébessa</sub>
