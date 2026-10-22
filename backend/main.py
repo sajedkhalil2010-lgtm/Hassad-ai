@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -104,6 +104,10 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: list[ChatTurn] = Field(default_factory=list, max_length=40)
     diagnosis: dict[str, Any] | None = None
+    #: Optional response-language override (``ar`` / ``fr`` / ``en``). When it
+    #: is absent or unusable, the language is detected from ``message``, so the
+    #: farmer is always answered in the language they wrote in.
+    language: str | None = None
 
 
 def create_app(
@@ -182,8 +186,18 @@ def create_app(
         }
 
     @app.post("/api/v1/analyze", tags=["analysis"])
-    async def analyze(request: Request, file: UploadFile = File(...)) -> JSONResponse:
-        """Run the full multi-agent pipeline on an uploaded leaf image."""
+    async def analyze(
+        request: Request,
+        file: UploadFile = File(...),
+        language: str | None = Form(None),
+    ) -> JSONResponse:
+        """Run the full multi-agent pipeline on an uploaded leaf image.
+
+        ``language`` is optional and lenient: an unreadable value is ignored
+        rather than rejected, because a farmer who cannot analyse their leaf
+        because they spelled the locale wrong is worse than one who gets the
+        answer in the default script.
+        """
         declared = (file.content_type or "").split(";")[0].strip().lower() or None
 
         try:
@@ -200,7 +214,7 @@ def create_app(
             raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {limit_mb} MB.")
 
         try:
-            report = supervisor.run(image_bytes, filename=file.filename, declared_mime=declared)
+            report = supervisor.run(image_bytes, filename=file.filename, declared_mime=declared, language=language)
         except AgentError as exc:
             logger.error("Supervisor raised AgentError: %s", exc.message)
             return JSONResponse(status_code=KIND_TO_STATUS.get(exc.kind, 500), content={"ok": False, "error": exc.to_dict()})
@@ -232,6 +246,7 @@ def create_app(
             payload.message,
             history=[turn.model_dump() for turn in payload.history],
             diagnosis=payload.diagnosis,
+            language=payload.language,
         )
 
         if not result.ok:

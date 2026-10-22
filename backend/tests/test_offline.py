@@ -36,10 +36,14 @@ class FakeDiagnostic:
 
     def __init__(self, payload=None, error=None):
         self._payload, self._error = payload, error
+        #: Records what the supervisor passed, so the wiring can be asserted
+        #: instead of merely not raising.
+        self.seen_language = None
 
-    def analyze(self, image_bytes, *, filename=None, declared_mime=None):
+    def analyze(self, image_bytes, *, filename=None, declared_mime=None, language=None):
         from agents.base import AgentResult
 
+        self.seen_language = language
         if self._error is not None:
             return AgentResult.failure(self._error)
         return AgentResult.success(self._payload)
@@ -50,10 +54,12 @@ class FakeAdvisor:
 
     def __init__(self, payload=None, error=None):
         self._payload, self._error = payload, error
+        self.seen_language = None
 
-    def build_plan(self, diagnosis):
+    def build_plan(self, diagnosis, *, language=None):
         from agents.base import AgentResult
 
+        self.seen_language = language
         if self._error is not None:
             return AgentResult.failure(self._error)
         return AgentResult.success(self._payload)
@@ -142,6 +148,67 @@ def main() -> int:
     check("failure kind is auth", result.error.kind == "auth", f"got {result.error.kind if result.error else None}")
     check("no key in error text", "your_single" not in (result.error.message + str(result.error.detail)))
 
+    print("\n=== 3b. DiagnosticAgent status + language shaping ===")
+    from agents.diagnostic_agent import _DIAGNOSTIC_JSON_SHAPE, _build_prompt
+
+    norm = DiagnosticAgent(settings)._normalise
+
+    base_report = {"crop": "tomato", "pathogen": "Alternaria solani", "symptoms": ["spot"],
+                   "severity": "moderate", "severity_pct": 0.4, "confidence": 0.8,
+                   "confidence_basis": "clear lesions"}
+
+    healthy_out = norm(dict(base_report, status="healthy", disease="Healthy Plant",
+                            disease_ar="نبات سليم"), mime="image/jpeg", model="m", elapsed_ms=1, filename=None)
+    check("status=healthy -> healthy True", healthy_out["healthy"] is True)
+    check("status field exposed", healthy_out["status"] == "healthy")
+    check("healthy disease normalised", healthy_out["disease"] == "Healthy Plant")
+    check("healthy disease_ar normalised", healthy_out["disease_ar"] == "نبات سليم")
+    check("healthy forces severity none", healthy_out["severity"] == "none")
+    check("healthy clears symptoms", healthy_out["symptoms"] == [])
+    check("healthy still offers care tips", len(healthy_out["recommendations"]) > 0)
+    check("healthy records language", healthy_out["meta"]["language"] == "en")
+
+    diseased_out = norm(dict(base_report, status="diseased", disease="Early blight",
+                             disease_ar="اللفحة المبكرة"), mime="image/jpeg", model="m", elapsed_ms=1, filename=None)
+    check("status=diseased -> healthy False", diseased_out["healthy"] is False)
+    check("diseased keeps the disease name", diseased_out["disease"] == "Early blight")
+    check("diseased keeps symptoms", diseased_out["symptoms"] == ["spot"])
+
+    legacy = norm(dict(base_report, disease="Healthy", disease_ar="سليم"),
+                  mime="image/jpeg", model="m", elapsed_ms=1, filename=None)
+    check("legacy model without status still classified", legacy["healthy"] is True and legacy["status"] == "healthy")
+
+    contradiction = norm(dict(base_report, status="diseased", disease="Healthy"),
+                         mime="image/jpeg", model="m", elapsed_ms=1, filename=None)
+    check("contradictory 'diseased + Healthy' is not called healthy", contradiction["healthy"] is False)
+    check("contradictory disease is renamed, not left as Healthy",
+          contradiction["disease"] == "Undetermined pathology")
+    check("contradictory case keeps an Arabic name", any(ord(c) > 0x0600 for c in contradiction["disease_ar"]))
+
+    ar_healthy = norm(dict(base_report, status="healthy", disease="Healthy Plant"),
+                      mime="image/jpeg", model="m", elapsed_ms=1, filename=None, language="ar")
+    check("arabic healthy tips are Arabic", any(ord(c) > 0x0600 for c in ar_healthy["recommendations"][0]))
+    check("arabic healthy records language", ar_healthy["meta"]["language"] == "ar")
+
+    ar_diseased = norm(dict(base_report, status="diseased", disease="Rust", disease_ar="الصدأ"),
+                       mime="image/jpeg", model="m", elapsed_ms=1, filename=None, language="ar")
+    check("arabic fallback advice is Arabic",
+          any(ord(c) > 0x0600 for c in norm({"disease": "Rust", "status": "diseased"},
+                                            mime="image/jpeg", model="m", elapsed_ms=1,
+                                            filename=None, language="ar")["recommendations"][0]))
+
+    prompt_en = _build_prompt("en")
+    prompt_ar = _build_prompt("ar")
+    check("prompt demands a status field", '"status": "healthy|diseased"' in prompt_en)
+    check("prompt gates step 2 behind status", "STEP 1" in prompt_en and "STEP 2" in prompt_en)
+    check("prompt tells the model to check for health first", "CLASSIFY BEFORE YOU DIAGNOSE" in prompt_en)
+    check("prompt names the Arabic label for healthy", "نبات سليم" in prompt_en)
+    check("prompt pins English", "English" in prompt_en and "Arabic" not in prompt_en.split("Rules:")[0].replace("العربية", ""))
+    check("prompt pins Arabic", "Arabic" in prompt_ar)
+    check("prompt keeps disease_ar Arabic in both", "disease_ar" in prompt_ar)
+    check("both prompts carry the identical JSON shape",
+          _DIAGNOSTIC_JSON_SHAPE in prompt_en and _DIAGNOSTIC_JSON_SHAPE in prompt_ar)
+
     print("\n=== 4. AdvisorAgent local KB fallback ===")
     aa = AdvisorAgent(settings)
     diag = {"disease": "Early blight", "crop": "Tomato", "severity": "moderate", "healthy": False, "confidence": 0.8}
@@ -157,7 +224,8 @@ def main() -> int:
         check("has irrigation schedule", bool(data["irrigation_schedule"]["schedule"]))
         check("has prevention", len(data["prevention"]) > 0)
         check("has disclaimer", "Tébessa" in data["disclaimer"])
-        check("has arabic regional context", any(ord(c) > 0x0600 for c in data["regional_context"]))
+        check("default regional context is English", "high plateau" in data["regional_context"])
+        check("default plan language is en", data["meta"]["language"] == "en")
         json.dumps(data)  # must be serialisable
 
     for disease, expected in [("Late blight", "late blight"), ("Powdery mildew", "powdery mildew"),
@@ -168,6 +236,58 @@ def main() -> int:
     healthy = aa.build_plan({"disease": "Healthy", "crop": "Wheat", "healthy": True})
     check("healthy plan is prevention-only", healthy.ok and healthy.data["title"].startswith("No pathology"))
 
+    print("\n=== 4b. AdvisorAgent Arabic plan (KB fallback) ===")
+    from agents.language import has_arabic as _has_ar
+
+    en_plan = aa.build_plan({"disease": "Late blight", "crop": "Potato", "severity": "high", "healthy": False})
+    ar_plan = aa.build_plan({"disease": "Late blight", "crop": "Potato", "severity": "high", "healthy": False}, language="ar")
+    check("arabic plan succeeds offline", ar_plan.ok is True, ar_plan.error.message if ar_plan.error else "")
+    if en_plan.ok and ar_plan.ok:
+        ar, en = ar_plan.data, en_plan.data
+        check("arabic plan declares language", ar["meta"]["language"] == "ar")
+        check("arabic actions", any(_has_ar(a) for a in ar["actions"]))
+        check("arabic treatments", any(_has_ar(t["detail"]) for t in ar["treatments"]))
+        check("arabic irrigation schedule", _has_ar(ar["irrigation_schedule"]["schedule"]))
+        check("arabic irrigation note", _has_ar(ar["irrigation_schedule"]["note"]))
+        check("arabic prevention", any(_has_ar(p) for p in ar["prevention"]))
+        check("arabic regional context", _has_ar(ar["regional_context"]))
+        check("arabic disclaimer is Arabic", _has_ar(ar["disclaimer"]))
+        check("arabic plan keeps an Arabic title_ar", _has_ar(ar["title_ar"]))
+        check("english plan has no Arabic in its actions",
+              not any(_has_ar(a) for a in en["actions"]), f"got {en['actions'][:2]}")
+        check("english plan has no Arabic in its disclaimer", not _has_ar(en["disclaimer"]))
+        check("english plan has no Arabic in regional context", not _has_ar(en["regional_context"]))
+        json.dumps(ar)
+
+    ar_healthy = aa.build_plan({"disease": "Healthy", "crop": "Wheat", "healthy": True}, language="ar")
+    check("arabic healthy plan is prevention-only", ar_healthy.ok and _has_ar(ar_healthy.data["title"]))
+    check("arabic healthy plan has no chemical treatment",
+          all(t["type"] != "chemical" for t in ar_healthy.data["treatments"]))
+
+    print("\n=== 4c. Language module ===")
+    from agents.language import DEFAULT_LANGUAGE, detect_language, normalise_language, reply_instruction, resolve_language
+
+    check("arabic detected by script", detect_language("كيف أعالج اللفحة المتأخرة؟") == "ar")
+    check("english detected", detect_language("How do I treat late blight?") == "en")
+    check("french detected", detect_language("Je veux traiter la maladie") == "fr")
+    check("mixed arabic+latin stays arabic", detect_language("سماد NPK 15-15-15") == "ar")
+    check("arabic-indic digits alone are not Arabic", detect_language("٤٦") == "en")
+    check("empty input falls back", detect_language("") == DEFAULT_LANGUAGE)
+    check("None input falls back", detect_language(None) == DEFAULT_LANGUAGE)
+
+    check("normalise ar-DZ", normalise_language("ar-DZ") == "ar")
+    check("normalise ARABIC", normalise_language("ARABIC") == "ar")
+    check("normalise العربية", normalise_language("العربية") == "ar")
+    check("normalise en_US", normalise_language("en_US") == "en")
+    check("normalise unknown -> None", normalise_language("klingon") is None)
+    check("normalise None -> None", normalise_language(None) is None)
+
+    check("explicit locale beats detection", resolve_language("ar", "how do I spray?") == "ar")
+    check("detection fills in when no locale", resolve_language(None, "كيف أرى؟") == "ar")
+    check("resolve falls back when nothing given", resolve_language(None, None) == "en")
+    check("reply instruction is Arabic for ar", "Arabic" in reply_instruction("ar"))
+    check("reply instruction is English for en", "English" in reply_instruction("en"))
+
     print("\n=== 5. SupervisorAgent orchestration ===")
     good_diag = {"disease": "Early blight", "disease_ar": "x", "crop": "Tomato", "pathogen": "Alternaria solani",
                  "pathology": "", "symptoms": [], "severity": "moderate", "severity_pct": 0.1,
@@ -176,7 +296,8 @@ def main() -> int:
     plan_payload = {"title": "T", "title_ar": "ت", "actions": [], "treatments": [],
                     "irrigation_schedule": {}, "prevention": [], "meta": {"source": "groq"}}
 
-    sup = SupervisorAgent(settings, diagnostic=FakeDiagnostic(good_diag), advisor=FakeAdvisor(plan_payload))
+    diag_see, adv_see = FakeDiagnostic(good_diag), FakeAdvisor(plan_payload)
+    sup = SupervisorAgent(settings, diagnostic=diag_see, advisor=adv_see)
     report = sup.run(png, filename="leaf.png")
     check("report ok", report["ok"] is True)
     check("status confirmed at high confidence", report["status"] == "confirmed")
@@ -184,7 +305,20 @@ def main() -> int:
     check("two stages recorded", len(report["stages"]) == 2)
     check("stages both ok", all(s["status"] == "ok" for s in report["stages"]))
     check("advisory present", report["advisory"]["title"] == "T")
+    check("report defaults to English", report["language"] == "en")
+    check("diagnostic stage received the language", diag_see.seen_language == "en")
+    check("advisor stage received the language", adv_see.seen_language == "en")
     json.dumps(report)
+
+    ar_diag, ar_adv = FakeDiagnostic(good_diag), FakeAdvisor(plan_payload)
+    ar_run = SupervisorAgent(settings, diagnostic=ar_diag, advisor=ar_adv).run(png, language="ar")
+    check("report echoes the requested language", ar_run["language"] == "ar")
+    check("diagnostic stage ran in Arabic", ar_diag.seen_language == "ar")
+    check("advisor stage ran in Arabic", ar_adv.seen_language == "ar")
+
+    bad_lang = FakeDiagnostic(good_diag)
+    SupervisorAgent(settings, diagnostic=bad_lang, advisor=FakeAdvisor(plan_payload)).run(png, language="klingon")
+    check("an unusable language hint falls back to English", bad_lang.seen_language == "en")
 
     low = dict(good_diag, confidence=0.3, low_confidence=True)
     sup_low = SupervisorAgent(settings, diagnostic=FakeDiagnostic(low), advisor=FakeAdvisor(plan_payload))
@@ -212,6 +346,14 @@ def main() -> int:
     sup_real = SupervisorAgent(settings, diagnostic=FakeDiagnostic(good_diag))
     r5 = sup_real.run(png)
     check("real advisor fallback inside supervisor", r5["ok"] is True and r5["advisory"]["meta"]["source"] == "local_kb")
+
+    r5ar = SupervisorAgent(settings, diagnostic=FakeDiagnostic(good_diag)).run(png, language="ar")
+    check("arabic advisor fallback inside supervisor",
+          r5ar["ok"] is True and r5ar["advisory"]["meta"]["source"] == "local_kb")
+    check("arabic plan through the whole supervisor is Arabic",
+          any(ord(c) > 0x0600 for c in r5ar["advisory"]["actions"][0]))
+    check("arabic plan still carries an English-facing title_ar",
+          bool(r5ar["advisory"]["title_ar"]))
 
     print("\n=== 7. FastAPI app + endpoints ===")
     from fastapi.testclient import TestClient
@@ -247,6 +389,23 @@ def main() -> int:
     check("analyze returns structured failure (no key)", real.status_code == 500, f"got {real.status_code}")
     check("failure body is JSON with error kind", real.json().get("error", {}).get("kind") == "auth", f"body={real.text[:200]}")
     check("no key leaked over HTTP", PLACEHOLDER_KEY not in real.text)
+
+    # `language` is a new optional field on both routes. With no key these
+    # still fail at auth, and that is exactly the point: the parameter must
+    # parse and travel without turning into a 422.
+    lang_probe = client.post("/api/v1/analyze", files={"file": ("leaf.png", png, "image/png")},
+                             data={"language": "ar"})
+    check("analyze accepts a language form field", lang_probe.status_code == 500
+          and lang_probe.json().get("error", {}).get("kind") == "auth", f"got {lang_probe.status_code} {lang_probe.text[:120]}")
+
+    weird_lang = client.post("/api/v1/analyze", files={"file": ("leaf.png", png, "image/png")},
+                             data={"language": "klingon"})
+    check("an unusable language hint is lenient, never a 422", weird_lang.status_code == 500,
+          f"got {weird_lang.status_code}")
+
+    chat_lang = client.post("/api/v1/chat", json={"message": "كيف أعالج اللفحة؟", "language": "ar"})
+    check("chat accepts a language field", chat_lang.status_code == 500
+          and chat_lang.json().get("error", {}).get("kind") == "auth", f"got {chat_lang.status_code} {chat_lang.text[:120]}")
 
     print("\n=== 8. CORS middleware wired ===")
     pre = client.options("/api/v1/analyze", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"})

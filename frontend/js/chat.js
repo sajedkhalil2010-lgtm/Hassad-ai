@@ -13,7 +13,7 @@
 
 import { call } from "./api.js";
 import { $, clear, el, show } from "./dom.js";
-import { t } from "./i18n.js";
+import { currentLang, t } from "./i18n.js";
 
 /** Backend caps history at 40 turns; stay comfortably under it. */
 const MAX_TURNS = 24;
@@ -169,7 +169,15 @@ export function initChat({ getContext } = {}) {
     try {
       const body = await call("/api/v1/chat", {
         method: "POST",
-        body: { message, history: history.slice(-MAX_TURNS), diagnosis: context },
+        body: {
+          message,
+          history: history.slice(-MAX_TURNS),
+          diagnosis: context,
+          // Mirrors the interface language. The server would otherwise detect
+          // it from the message, which fails the moment a farmer types a
+          // Latin-cultivar name into an Arabic session.
+          language: currentLang(),
+        },
       });
 
       // Only commit the turn to history once the backend accepted it — a

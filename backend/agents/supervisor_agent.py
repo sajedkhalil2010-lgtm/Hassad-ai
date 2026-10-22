@@ -17,6 +17,7 @@ from .advisor_agent import AdvisorAgent
 from .base import AgentError, AgentResult, as_dict, as_str, clamp01
 from .config import Settings, get_settings
 from .diagnostic_agent import DiagnosticAgent
+from .language import DEFAULT_LANGUAGE, resolve_language
 
 PIPELINE_ID = "supervisor_v1"
 
@@ -41,20 +42,34 @@ class SupervisorAgent:
 
     # -- public API --------------------------------------------------------
 
-    def run(self, image_bytes: bytes, *, filename: str | None = None, declared_mime: str | None = None) -> dict[str, Any]:
-        """Full pipeline. Always returns a JSON-serialisable dict — never raises."""
+    def run(
+        self,
+        image_bytes: bytes,
+        *,
+        filename: str | None = None,
+        declared_mime: str | None = None,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """Full pipeline. Always returns a JSON-serialisable dict — never raises.
+
+        ``language`` is resolved once, here, so both stages answer in the same
+        script. Resolving it per-agent would let the vision and advisory stages
+        disagree — a diagnosis in Arabic followed by an English plan is worse
+        than either alone, because the farmer cannot tell which one is wrong.
+        """
+        lang = resolve_language(language)
         run_id = uuid.uuid4().hex
         started = time.perf_counter()
         stages: list[dict[str, Any]] = []
 
         # ---- Stage 1: diagnosis -----------------------------------------
         t0 = time.perf_counter()
-        diagnosis_result = self.diagnostic.analyze(image_bytes, filename=filename, declared_mime=declared_mime)
+        diagnosis_result = self.diagnostic.analyze(image_bytes, filename=filename, declared_mime=declared_mime, language=lang)
         stages.append(self._stage("diagnostic", t0, diagnosis_result))
 
         if not diagnosis_result.ok:
             error = diagnosis_result.error or AgentError("api", "Diagnostic stage failed.")
-            return self._error_report(run_id, started, stages, error)
+            return self._error_report(run_id, started, stages, error, lang)
 
         diagnosis = as_dict(diagnosis_result.data)
         confidence = clamp01(diagnosis.get("confidence"), 0.0)
@@ -62,7 +77,7 @@ class SupervisorAgent:
 
         # ---- Stage 2: advisory ------------------------------------------
         t1 = time.perf_counter()
-        advisory_result = self.advisor.build_plan(diagnosis)
+        advisory_result = self.advisor.build_plan(diagnosis, language=lang)
         stages.append(self._stage("advisor", t1, advisory_result))
 
         if advisory_result.ok:
@@ -82,6 +97,7 @@ class SupervisorAgent:
             "status": "provisional" if provisional else "confirmed",
             "run_id": run_id,
             "pipeline": PIPELINE_ID,
+            "language": lang,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "diagnosis": diagnosis,
             "advisory": advisory,
@@ -116,12 +132,19 @@ class SupervisorAgent:
         return {"name": name, "status": "error", "duration_ms": duration, "error": error.to_dict()}
 
     @staticmethod
-    def _error_report(run_id: str, started: float, stages: list[dict[str, Any]], error: AgentError) -> dict[str, Any]:
+    def _error_report(
+        run_id: str,
+        started: float,
+        stages: list[dict[str, Any]],
+        error: AgentError,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> dict[str, Any]:
         return {
             "ok": False,
             "status": "failed",
             "run_id": run_id,
             "pipeline": PIPELINE_ID,
+            "language": language,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "error": error.to_dict(),
             "diagnosis": None,

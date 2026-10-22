@@ -169,6 +169,41 @@ def main():
         for key in ("disease", "confidence", "severity", "symptoms", "recommendations"):
             check(f"frontend key present: {key}", key in d)
 
+        check("status derived when the model omits it", d["status"] == "diseased",
+              f"got {d.get('status')!r}")
+        check("a real disease is not healthy", d["healthy"] is False)
+        check("diagnosis meta records language", d["meta"]["language"] == "en")
+
+    print("\n=== A2. Healthy classification and language passthrough ===")
+    healthy_json = ('{"is_leaf_image": true, "status": "healthy", "crop": "Tomato", '
+                    '"disease": "Healthy Plant", "disease_ar": "\u0646\u0628\u0627\u062a \u0633\u0644\u064a\u0645", '
+                    '"pathogen": "None", "pathology": "clean blade", "symptoms": ["natural variation"], '
+                    '"severity": "none", "severity_pct": 0.0, "confidence": 0.94, '
+                    '"confidence_basis": "clean blade", "recommendations": ["keep scouting"], '
+                    '"differential": [], "image_quality": "good"}')
+
+    hc = RecordingClient(response_text=healthy_json)
+    hr = diag_mod.DiagnosticAgent(cfg, client=hc).analyze(make_png(), language="ar")
+    check("healthy image classifies as healthy", hr.ok is True and hr.data["healthy"] is True)
+    check("status field exposed to the client", hr.data["status"] == "healthy")
+    check("healthy severity forced to none", hr.data["severity"] == "none")
+    check("healthy symptoms cleared for the UI", hr.data["symptoms"] == [])
+    check("healthy disease label is canonical", hr.data["disease"] == "Healthy Plant")
+    check("healthy disease_ar is Arabic", any(ord(c) > 0x0600 for c in hr.data["disease_ar"]))
+    check("requested language reaches meta", hr.data["meta"]["language"] == "ar")
+
+    sent = str((hc.last_call.get("messages") or [{}])[0])
+    check("vision prompt asks for a status field", '"status": "healthy|diseased"' in sent)
+    check("vision prompt asks for a two-step read", "STEP 1" in sent and "STEP 2" in sent)
+    check("vision prompt names the response language", "Arabic" in sent)
+
+    ar_prompt_agent = RecordingClient(response_text=healthy_json)
+    diag_mod.DiagnosticAgent(cfg, client=ar_prompt_agent).analyze(make_png(), language="en")
+    check("english request pins English in the prompt", "English" in str(ar_prompt_agent.last_call))
+    check("an unusable language hint does not break the call",
+          diag_mod.DiagnosticAgent(cfg, client=RecordingClient(response_text=healthy_json))
+          .analyze(make_png(), language="klingon").ok is True)
+
     print("\n=== B. DiagnosticAgent survives malformed model output ===")
     for bad_label, bad_text in [("plain text", "I cannot see an image."),
                                 ("empty", ""),
@@ -307,6 +342,45 @@ def main():
     check("advisor request is text-only",
           isinstance((adv_call.get("messages") or [{}])[0].get("content"), str))
     check("advisor requests json_object", adv_call.get("response_format") == {"type": "json_object"})
+
+    # Same remote payload, requested in Arabic. The model here answered in
+    # English on purpose, so the fields the farmer's safety depends on must
+    # come from our own Arabic text rather than from whatever it returned.
+    ca = RecordingClient(response_text=remote)
+    ra = adv_mod.AdvisorAgent(cfg, client=ca).build_plan(diag, language="ar")
+    check("arabic advisor request succeeds", ra.ok is True, ra.error.message if ra.error else "")
+    check("advisor prompt pins Arabic", "Arabic" in str(ca.last_call))
+    if ra.ok:
+        da = ra.data
+        check("advisory meta records language", da["meta"]["language"] == "ar")
+        check("title_ar stays Arabic even when the model drifts",
+              all(ord(ch) > 0x0600 for ch in da["title_ar"]), f"got {da['title_ar']!r}")
+        check("arabic regional context", any(ord(ch) > 0x0600 for ch in da["regional_context"]))
+        check("arabic disclaimer", any(ord(ch) > 0x0600 for ch in da["disclaimer"]))
+
+    print("\n=== E2. Advisor KB language selection ===")
+    # Remote unavailable -> the bilingual KB is what the farmer gets.
+    kb_off = Settings(_env_file=None, groq_api_key=None)
+    kb_en = adv_mod.AdvisorAgent(kb_off).build_plan(diag)
+    kb_ar = adv_mod.AdvisorAgent(kb_off).build_plan(diag, language="ar")
+    check("kb english source", kb_en.ok and kb_en.data["meta"]["source"] == "local_kb")
+    check("kb arabic source", kb_ar.ok and kb_ar.data["meta"]["source"] == "local_kb")
+    if kb_en.ok and kb_ar.ok:
+        check("kb english actions are English",
+              not any(ord(ch) > 0x0600 for ch in kb_en.data["actions"][0]),
+              f"got {kb_en.data['actions'][0]!r}")
+        check("kb arabic actions are Arabic",
+              any(ord(ch) > 0x0600 for ch in kb_ar.data["actions"][0]),
+              f"got {kb_ar.data['actions'][0]!r}")
+        check("kb arabic and english plans are the same length",
+              len(kb_ar.data["actions"]) == len(kb_en.data["actions"]))
+        check("kb arabic treatments keep Latin product names",
+              any(ch.isascii() and ch.isalpha() for ch in kb_ar.data["treatments"][1]["detail"]),
+              f"got {kb_ar.data['treatments'][1]['detail']!r}")
+        check("kb english plan keeps its own disclaimer",
+              "T\u00e9bessa" in kb_en.data["disclaimer"])
+        check("kb arabic plan keeps an Arabic disclaimer",
+              "\u062a\u0628\u0633\u0629" in kb_ar.data["disclaimer"])
 
     print("\n=== F. Advisor falls back to KB when remote returns junk ===")
     c6 = RecordingClient(response_text="not json at all")

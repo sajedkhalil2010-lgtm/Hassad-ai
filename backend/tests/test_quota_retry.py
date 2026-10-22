@@ -18,12 +18,19 @@ import sys
 import httpx
 from PIL import Image
 
+import agents.chat_agent as chat_mod
 import agents.diagnostic_agent as diag_mod
 import agents.advisor_agent as adv_mod
 from groq import APIError as GroqAPIError
 from groq import APIStatusError
 
-from agents.base import QUOTA_MESSAGE_AR, is_quota_error, run_with_quota_retry
+from agents.base import (
+    QUOTA_MESSAGE_AR,
+    is_malformed_output_error,
+    is_quota_error,
+    run_with_output_retry,
+    run_with_quota_retry,
+)
 from agents.config import Settings
 from agents.supervisor_agent import SupervisorAgent
 
@@ -117,7 +124,7 @@ GOOD_JSON = (
 )
 
 # Zero real sleeping: we assert the schedule through the injected `sleep`.
-FAST = {"quota_retry_base_delay_s": 0.0}
+FAST = {"quota_retry_base_delay_s": 0.0, "output_retry_base_delay_s": 0.0}
 
 
 def main() -> int:
@@ -177,6 +184,67 @@ def main() -> int:
         check("400 propagates", True)
     check("400 is not retried (1 call only)", calls["n"] == 1, f"got {calls['n']}")
 
+    print("\n=== D2. malformed completions are regenerated, not surfaced ===")
+    MALFORMED_JSON = ('{"reply": "The late blight treatment is below.", '
+                      '"suggestions": ["What interval?", "Any alternative?"]}')
+    malformed = api_error(400, "Failed to validate JSON. Please adjust your prompt.")
+
+    check("the JSON-validation 400 is recognised", is_malformed_output_error(malformed))
+    check("Groq's second wording is recognised too",
+          is_malformed_output_error(api_error(400, "Failed to generate JSON.")))
+    check("a plain 400 is NOT mistaken for it",
+          not is_malformed_output_error(api_error(400, "bad image")))
+    check("a 429 is not a malformed-output error",
+          not is_malformed_output_error(quota_error()))
+    check("a ValueError is not a malformed-output error",
+          not is_malformed_output_error(ValueError("nope")))
+
+    seen_json = {"n": 0}
+
+    def flaky_json():
+        seen_json["n"] += 1
+        if seen_json["n"] == 1:
+            raise malformed
+        return "ok"
+
+    got = run_with_output_retry(flaky_json, attempts=2, base_delay_s=0.0, sleep=lambda _s: None)
+    check("recovers on the second draw", got == "ok")
+    check("regenerated exactly once", seen_json["n"] == 2, f"got {seen_json['n']}")
+
+    dead_json = {"n": 0}
+
+    def always_malformed():
+        dead_json["n"] += 1
+        raise malformed
+
+    try:
+        run_with_output_retry(always_malformed, attempts=2, base_delay_s=0.0, sleep=lambda _s: None)
+        check("an exhausted regeneration re-raises", False)
+    except GroqAPIError:
+        check("an exhausted regeneration re-raises", True)
+    check("the regeneration budget is honoured", dead_json["n"] == 2, f"got {dead_json['n']}")
+
+    # A genuinely bad request must NOT be silently regenerated: that would
+    # burn quota on a payload that is wrong every time.
+    real_bad = {"n": 0}
+
+    def real_bad_request():
+        real_bad["n"] += 1
+        raise api_error(400, "unsupported image")
+
+    try:
+        run_with_output_retry(real_bad_request, attempts=3, base_delay_s=0.0, sleep=lambda _s: None)
+        check("a genuine 400 propagates immediately", False)
+    except GroqAPIError:
+        check("a genuine 400 propagates immediately", True)
+    check("a genuine 400 is not regenerated", real_bad["n"] == 1, f"got {real_bad['n']}")
+
+    check("default regeneration budget is 2",
+          Settings(_env_file=None, groq_api_key=FAKE_KEY).output_retry_attempts == 2)
+    check("regeneration backoff is shorter than the quota one",
+          Settings(_env_file=None, groq_api_key=FAKE_KEY).output_retry_base_delay_s
+          < Settings(_env_file=None, groq_api_key=FAKE_KEY).quota_retry_base_delay_s)
+
     cfg = Settings(_env_file=None, groq_api_key=FAKE_KEY, **FAST)
 
     print("\n=== E. DiagnosticAgent retries once and recovers ===")
@@ -196,6 +264,24 @@ def main() -> int:
     check("attempt budget respected", dead.calls == cfg.quota_retry_attempts,
           f"got {dead.calls}")
     check("no key leaked", FAKE_KEY not in str(res2.error.to_dict()))
+
+    print("\n=== F2. ChatAgent regenerates a malformed completion ===")
+    chat_ok = ('{"reply": "Use copper hydroxide 2 mL/L.", '
+               '"suggestions": ["What interval?"]}')
+    chat_recover = FlakyClient(api_error(400, "Failed to validate JSON."), fail_times=1, ok_text=chat_ok)
+    cres = chat_mod.ChatAgent(cfg, client=chat_recover).ask("كيف أعالج اللفحة؟")
+    check("chat recovers from a malformed completion", cres.ok is True,
+          cres.error.message if cres.error else "")
+    check("chat regenerated exactly once", chat_recover.calls == 2, f"got {chat_recover.calls}")
+    check("the recovered reply is intact", cres.ok and cres.data["reply"].startswith("Use copper"))
+
+    chat_dead = FlakyClient(api_error(400, "Failed to generate JSON."), fail_times=99, ok_text="")
+    cres2 = chat_mod.ChatAgent(cfg, client=chat_dead).ask("كيف أعالج اللفحة؟")
+    check("an exhausted regeneration fails cleanly, never raises",
+          cres2.ok is False and cres2.error.kind == "busy")
+    check("it stays retryable for the farmer", cres2.ok is False and cres2.error.retryable is True)
+    check("it spent both draws, no more", chat_dead.calls == cfg.output_retry_attempts,
+          f"got {chat_dead.calls}")
 
     print("\n=== G. AdvisorAgent exhausted -> Arabic, and KB fallback still works ===")
     adv_dead = FlakyClient(quota_error(), fail_times=99, ok_text="")

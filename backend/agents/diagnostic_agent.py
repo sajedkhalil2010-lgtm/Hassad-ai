@@ -33,20 +33,29 @@ from .base import (
     classify_http_error,
     normalise_image_bytes,
     parse_model_json,
+    run_with_output_retry,
     run_with_quota_retry,
 )
 from .config import Settings, get_settings
+from .language import (
+    DEFAULT_LANGUAGE,
+    LANG_NAME,
+    normalise_language,
+    reply_instruction,
+)
 
 #: Structured-output contract handed to the model. Keeping it inline (rather
 #: than a remote schema) makes the shape auditable and stable. The keys the
-#: frontend depends on — disease / confidence / severity / symptoms /
+#: frontend depends on — status / disease / confidence / severity / symptoms /
 #: recommendations — are all part of this contract.
-_DIAGNOSTIC_SCHEMA_PROMPT = """\
-You are a plant-pathologist AI. Analyse the crop leaf image and return ONLY a
-JSON object with EXACTLY this shape (no prose, no markdown fences):
-
+#:
+#: ``status`` is the addition this revision is built around: a single field
+#: that answers the question a farmer actually has ("is this plant sick?")
+#: before any disease name is argued about.
+_DIAGNOSTIC_JSON_SHAPE = """\
 {
   "is_leaf_image": true,
+  "status": "healthy|diseased",
   "crop": "tomato",
   "disease": "Early blight",
   "disease_ar": "اللفحة المبكرة",
@@ -60,16 +69,124 @@ JSON object with EXACTLY this shape (no prose, no markdown fences):
   "recommendations": ["immediate action the farmer should take", "..."],
   "differential": ["plausible alternative", "..."],
   "image_quality": "good|usable|poor"
-}
+}"""
+
+#: The full instruction. Assembled from the shape plus a language directive
+#: by :func:`_build_prompt`, because the JSON braces below make this
+#: unusable as a Python f-string without doubling every one of them.
+_PROMPT_TEMPLATE = """\
+You are a plant-pathologist AI examining ONE crop-leaf photograph.
+
+Work in TWO steps, in this order.
+
+STEP 1 - CLASSIFY BEFORE YOU DIAGNOSE (this gates everything else).
+Decide whether the leaf is healthy or pathological. "Healthy" means the blade
+shows ZERO lesions, ZERO abnormal discolouration, ZERO fungal or bacterial
+growth, and ZERO pest damage. Natural variation in colour and shape is not
+disease.
+  - HEALTHY -> "status" = "healthy", "disease" = "Healthy Plant",
+    "disease_ar" = "نبات سليم", "pathogen" = "None", "severity" = "none",
+    "severity_pct" = 0.0, and make "recommendations" purely care and
+    prevention advice (scouting, balanced feeding, irrigation hygiene).
+  - ANYTHING PATHOLOGICAL -> "status" = "diseased" and continue to step 2.
+Do NOT invent a disease in order to be helpful. A wrong disease name sends a
+farmer to spray something their healthy crop did not need.
+
+STEP 2 - IDENTIFY (only when "status" is "diseased").
+Name the single most likely condition and ground it in what is actually
+visible in this image. Distinguish between the patterns that separate the
+common look-alikes:
+  - rust -> raised orange-brown pustules, often ringed by chlorosis
+  - blight -> expanding necrotic lesions; early blight shows concentric
+    "target-board" rings, late blight shows water-soaked dark patches with
+    pale haloes and can be followed by white fuzzy growth underneath
+  - powdery / downy mildew -> superficial white-grey colonisation, downy
+    being angular and confined by veins
+  - pest damage -> chewing, mines, stippling, or frass; say so rather than
+    calling it a fungus
+  - nutrient deficiency -> a symmetric pattern (interveinal chlorosis,
+    marginal scorch, uniform yellowing) with no expanding lesion edge
+State the primary symptoms you can see, list at least one plausible
+alternative in "differential", and give a concrete ordered treatment
+sequence in "recommendations".
+
+Return ONLY a JSON object with EXACTLY this shape (no prose, no markdown fences):
+
+__SCHEMA__
+
+__LANGUAGE__
 
 Rules:
+- "status" is EXACTLY "healthy" or "diseased" — no other value, no blanks.
+- "status" = "healthy" only when you have positively confirmed a healthy
+  leaf. Anything you cannot verify (blur, glare, a non-leaf photograph,
+  insufficient detail) must be reported as "diseased" so the farmer is not
+  told a plant is fine when you could not actually see it.
 - "confidence" and "severity_pct" are floats in [0,1].
 - Be honest: if the image is blurry, over-exposed or not a leaf, lower
   "confidence" and say so in "confidence_basis"; still fill every field.
-- "disease" must be "Healthy" when no pathology is present.
+- "disease" is ALWAYS the English disease name and "disease_ar" is ALWAYS
+  natural Arabic — both, in every response, whichever language you are
+  writing the rest in.
+- "pathology", "symptoms", "confidence_basis", "differential" and
+  "recommendations" must be written in __LANG_NAME__, because that is the
+  language the farmer is reading.
 - "recommendations" must always be a non-empty array of concrete steps.
-- Write "disease_ar" in natural Arabic; every other value in English.
 """
+
+
+def _build_prompt(language: str) -> str:
+    """Assemble the vision instruction for a given response language.
+
+    Splitting this out is what lets one schema serve both locales without
+    maintaining two copies of the rules that must not drift apart.
+    """
+    return _PROMPT_TEMPLATE.replace("__SCHEMA__", _DIAGNOSTIC_JSON_SHAPE).replace(
+        "__LANGUAGE__", reply_instruction(language)
+    ).replace("__LANG_NAME__", LANG_NAME.get(language, LANG_NAME[DEFAULT_LANGUAGE]))
+
+
+#: Disease labels that really mean "nothing is wrong". Used only as the
+#: fallback when a model omits ``status``, and again to catch the contradictory
+#: case where ``status`` says diseased but this is the only label available.
+_HEALTHY_DISEASE_NAMES = {
+    "healthy",
+    "healthy plant",
+    "healthy leaf",
+    "no disease",
+    "no pathology",
+    "normal",
+    "not diseased",
+    "free of disease",
+}
+
+#: Care and prevention advice for a confirmed-healthy leaf. The model writes
+#: the real answer; this is the last-resort pair so a healthy plant is never
+#: handed a treatment schedule, in either language.
+_HEALTHY_TIPS: dict[str, list[str]] = {
+    "en": [
+        "No treatment required - continue the current programme.",
+        "Scout weekly: catching an outbreak early is far cheaper than curing one.",
+        "Keep irrigation on the soil rather than the foliage; wet leaves are where infection starts.",
+        "Remove and bin fallen or pruned material, which is where many pathogens overwinter.",
+    ],
+    "ar": [
+        "لا حاجة إلى علاج - واصلي البرنامج الحالي كما هو.",
+        "افحص المحاصيل أسبوعيًا: اكتشاف الإصابة مبكرًا أرخص بكثير من علاجها.",
+        "وجّه الري إلى التربة لا إلى الأوراق؛ الأوراق المبللة هي حيث تبدأ العدوى.",
+        "أزل المواد الساقطة والمقطوعة واحرقها، فهي المكان الذي تبيّت فيه كثير من الممرضات.",
+    ],
+}
+
+#: Last-resort treatment line when the model returned no recommendations at
+#: all. Pointing at the regional extension service is the honest answer when
+#: we cannot name a disease ourselves.
+_TREATMENT_FALLBACK_EN = [
+    "Consult the DPA of Tébessa before applying any phytosanitary product.",
+]
+_TREATMENT_FALLBACK_AR = [
+    "استشر المديرية الإقليمية للزراعية بتبسة قبل استعمال أي مبيد أو منتج فلاحي.",
+]
 
 #: Confidence below this is flagged for the supervisor to treat cautiously.
 LOW_CONFIDENCE_THRESHOLD = 0.55
@@ -142,8 +259,24 @@ class DiagnosticAgent:
 
     # -- public API --------------------------------------------------------
 
-    def analyze(self, image_bytes: bytes, *, filename: str | None = None, declared_mime: str | None = None) -> AgentResult:
-        """Diagnose one leaf image. Never raises — always returns an AgentResult."""
+    def analyze(
+        self,
+        image_bytes: bytes,
+        *,
+        filename: str | None = None,
+        declared_mime: str | None = None,
+        language: str | None = None,
+    ) -> AgentResult:
+        """Diagnose one leaf image. Never raises — always returns an AgentResult.
+
+        ``language`` pins the language of the narrative fields (``pathology``,
+        ``symptoms``, ``confidence_basis``, ``differential``, ``recommendations``).
+        It defaults to English, which is what the API has always returned for a
+        bare call; the app sends the current locale so an Arabic farmer gets
+        Arabic prose. ``disease`` / ``disease_ar`` are always both filled in
+        regardless, so the caller can flip the display language afterwards.
+        """
+        lang = normalise_language(language) or DEFAULT_LANGUAGE
         started = time.perf_counter()
 
         try:
@@ -169,7 +302,7 @@ class DiagnosticAgent:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": _DIAGNOSTIC_SCHEMA_PROMPT},
+                            {"type": "text", "text": _build_prompt(lang)},
                             {"type": "image_url", "image_url": {"url": data_uri}},
                         ],
                     }
@@ -180,10 +313,14 @@ class DiagnosticAgent:
             )
 
         try:
-            response = run_with_quota_retry(
-                _generate,
-                attempts=self.settings.quota_retry_attempts,
-                base_delay_s=self.settings.quota_retry_base_delay_s,
+            response = run_with_output_retry(
+                lambda: run_with_quota_retry(
+                    _generate,
+                    attempts=self.settings.quota_retry_attempts,
+                    base_delay_s=self.settings.quota_retry_base_delay_s,
+                ),
+                attempts=self.settings.output_retry_attempts,
+                base_delay_s=self.settings.output_retry_base_delay_s,
             )
         except GroqAPIError as exc:
             return AgentResult.failure(self._classify_sdk_error(exc))
@@ -201,7 +338,7 @@ class DiagnosticAgent:
         except AgentError as exc:
             return AgentResult.failure(exc)
 
-        return AgentResult.success(self._normalise(report, mime=mime, model=self.settings.vision_model, elapsed_ms=elapsed_ms, filename=filename))
+        return AgentResult.success(self._normalise(report, mime=mime, model=self.settings.vision_model, elapsed_ms=elapsed_ms, filename=filename, language=lang))
 
     @staticmethod
     def _extract_text(response: Any) -> str | None:
@@ -230,8 +367,25 @@ class DiagnosticAgent:
 
     # -- output shaping ----------------------------------------------------
 
-    def _normalise(self, report: dict[str, Any], *, mime: str, model: str, elapsed_ms: int, filename: str | None) -> dict[str, Any]:
-        """Coerce untrusted model output into a stable, typed shape."""
+    def _normalise(
+        self,
+        report: dict[str, Any],
+        *,
+        mime: str,
+        model: str,
+        elapsed_ms: int,
+        filename: str | None,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> dict[str, Any]:
+        """Coerce untrusted model output into a stable, typed shape.
+
+        ``status`` is the authority for the healthy/pathological split. The
+        model is instructed to emit it directly, so the old heuristic — a
+        string match on ``disease`` — now only runs as a fallback for a model
+        that predates the field. That order matters: a classifier asked "is
+        this healthy?" should not have its answer overridden by the name it
+        happened to give afterwards.
+        """
         report = as_dict(report)
         symptoms = as_str_list(report.get("symptoms"))
         differential = as_str_list(report.get("differential"))
@@ -243,31 +397,52 @@ class DiagnosticAgent:
 
         disease = as_str(report.get("disease"), "Unknown")
         crop = as_str(report.get("crop"), "Unknown")
-        healthy = disease.lower() in {"healthy", "no disease", "healthy leaf", "normal"}
+
+        status = as_str(report.get("status"), "").strip().lower()
+        if status not in {"healthy", "diseased"}:
+            # Fallback for a model that answered in the pre-`status` shape.
+            status = "healthy" if disease.lower() in _HEALTHY_DISEASE_NAMES else "diseased"
+        healthy = status == "healthy"
 
         if healthy:
+            # A confirmed-healthy leaf must read as one in both scripts, not
+            # as "Healthy"/"الصحة" or whatever phrasing the model chose.
+            disease = "Healthy Plant"
+            disease_ar = "نبات سليم"
+            pathogen = "None"
             severity = "none"
             severity_pct = 0.0
+            symptoms = []
+            differential = []
+            recommendations = recommendations or _HEALTHY_TIPS[language][:2]
+        else:
+            disease_ar = as_str(report.get("disease_ar"), "غير معروف")
+            pathogen = as_str(report.get("pathogen"), "Unknown")
+            if disease.lower() in _HEALTHY_DISEASE_NAMES:
+                # `status` says sick but the only label we have says healthy.
+                # Reporting "Healthy" here would undo the whole classification,
+                # so say plainly that something is wrong and we cannot name it.
+                disease = "Undetermined pathology"
+                disease_ar = "ظهور مرض غير محدد"
             if not recommendations:
-                recommendations = [
-                    "No treatment required; continue the current programme.",
-                    "Scout weekly - early detection keeps a plot healthy.",
-                ]
+                recommendations = (
+                    _TREATMENT_FALLBACK_AR
+                    if language == "ar"
+                    else _TREATMENT_FALLBACK_EN
+                )
 
         quality = as_str(report.get("image_quality"), "usable").lower()
         if quality not in {"good", "usable", "poor"}:
             quality = "usable"
 
-        if not recommendations:
-            recommendations = ["Consult the DPA of Tébessa before applying any phytosanitary product."]
-
         return {
             "is_leaf_image": bool(report.get("is_leaf_image", True)),
+            "status": status,
             "healthy": healthy,
             "crop": crop,
             "disease": disease,
-            "disease_ar": as_str(report.get("disease_ar"), "غير معروف"),
-            "pathogen": as_str(report.get("pathogen"), "Unknown"),
+            "disease_ar": disease_ar,
+            "pathogen": pathogen,
             "pathology": as_str(report.get("pathology"), ""),
             "symptoms": symptoms,
             "severity": severity,
@@ -284,6 +459,7 @@ class DiagnosticAgent:
                 "mime": mime,
                 "filename": filename,
                 "latency_ms": elapsed_ms,
+                "language": language,
             },
         }
 

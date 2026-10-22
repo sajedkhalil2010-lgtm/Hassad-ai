@@ -44,9 +44,11 @@ from .base import (
     clamp01,
     classify_http_error,
     parse_model_json,
+    run_with_output_retry,
     run_with_quota_retry,
 )
 from .config import Settings, get_settings
+from .language import DEFAULT_LANGUAGE, reply_instruction, resolve_language
 
 #: System prompt. Written to produce advice a farmer in the Algerian steppe
 #: can act on today, and to keep the model inside its competence.
@@ -64,8 +66,11 @@ Local knowledge to draw on:
   locust, aphids and whitefly.
 
 Rules:
-1. Reply in the SAME language the farmer writes in (Arabic, French or
-   English). Arabic must be natural and farmer-friendly, not bookish.
+1. The reply language is DECIDED BY THE SERVER and handed to you as an
+   explicit directive at the end of this prompt. Follow it exactly. Failing
+   that directive, reply in the SAME language the farmer writes in (Arabic,
+   French or English). Arabic must be natural and farmer-friendly, not
+   bookish.
 2. Be concrete: what to do, when, and at what rate or dose. Avoid theory.
 3. Prefer cultural and biological control. When a phytosanitary product is
    genuinely needed, name the ACTIVE INGREDIENT and its rate — not a brand,
@@ -214,12 +219,22 @@ class ChatAgent:
             return ""
         return "Context from the farmer's most recent image diagnosis (use only if relevant to the question):\n" + "\n".join(lines)
 
-    def _build_messages(self, message: str, history: list[dict[str, str]], diagnosis: Any) -> list[dict[str, Any]]:
+    def _build_messages(
+        self,
+        message: str,
+        history: list[dict[str, str]],
+        diagnosis: Any,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": _SYSTEM_PROMPT}]
 
         context = self._diagnosis_context(diagnosis)
         if context:
             messages.append({"role": "system", "content": context})
+
+        # Sent last so it outranks both the static prompt and any older turn
+        # that was produced in the other language.
+        messages.append({"role": "system", "content": reply_instruction(language)})
 
         messages.extend(history)
         messages.append({"role": "user", "content": message})
@@ -233,8 +248,14 @@ class ChatAgent:
         *,
         history: Any = None,
         diagnosis: dict[str, Any] | None = None,
+        language: str | None = None,
     ) -> AgentResult:
-        """Answer one farmer question. Never raises — always returns a result."""
+        """Answer one farmer question. Never raises — always returns a result.
+
+        ``language`` overrides detection, which is the right thing for an app
+        whose locale is set to Arabic while the farmer types a Latin-script
+        cultivar name. Without an override the message itself is classified.
+        """
         started = time.perf_counter()
 
         text = str(message or "").strip()
@@ -249,13 +270,15 @@ class ChatAgent:
                 )
             )
 
+        lang = resolve_language(language, text)
+
         try:
             client = self._get_client()
         except AgentError as exc:
             return AgentResult.failure(exc)
 
         turns = self._clean_history(history)
-        messages = self._build_messages(text, turns, diagnosis)
+        messages = self._build_messages(text, turns, diagnosis, lang)
 
         def _generate() -> Any:
             return client.chat.completions.create(
@@ -267,10 +290,14 @@ class ChatAgent:
             )
 
         try:
-            response = run_with_quota_retry(
-                _generate,
-                attempts=self.settings.quota_retry_attempts,
-                base_delay_s=self.settings.quota_retry_base_delay_s,
+            response = run_with_output_retry(
+                lambda: run_with_quota_retry(
+                    _generate,
+                    attempts=self.settings.quota_retry_attempts,
+                    base_delay_s=self.settings.quota_retry_base_delay_s,
+                ),
+                attempts=self.settings.output_retry_attempts,
+                base_delay_s=self.settings.output_retry_base_delay_s,
             )
         except GroqAPIError as exc:
             return AgentResult.failure(self._classify_sdk_error(exc))
@@ -293,7 +320,7 @@ class ChatAgent:
         # escapes as a bare exception instead of a clean, structured failure.
         try:
             data = self._normalise(
-                report, model=self.settings.chat_model, elapsed_ms=elapsed_ms, history_turns=len(turns)
+                report, model=self.settings.chat_model, elapsed_ms=elapsed_ms, history_turns=len(turns), language=lang
             )
         except AgentError as exc:
             return AgentResult.failure(exc)
@@ -326,7 +353,15 @@ class ChatAgent:
 
     # -- output shaping ----------------------------------------------------
 
-    def _normalise(self, report: dict[str, Any], *, model: str, elapsed_ms: int, history_turns: int) -> dict[str, Any]:
+    def _normalise(
+        self,
+        report: dict[str, Any],
+        *,
+        model: str,
+        elapsed_ms: int,
+        history_turns: int,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> dict[str, Any]:
         """Coerce untrusted model output into the shape the chat UI needs."""
         report = as_dict(report)
 
@@ -347,6 +382,7 @@ class ChatAgent:
                 "source": "groq",
                 "latency_ms": elapsed_ms,
                 "history_turns": history_turns,
+                "language": language,
             },
         }
 

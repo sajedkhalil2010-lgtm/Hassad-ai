@@ -12,7 +12,7 @@
 import { call } from "./api.js";
 import { $, ar, bytes, clear, el, pct, show } from "./dom.js";
 import { addRecord } from "./history.js";
-import { t } from "./i18n.js";
+import { currentLang, t } from "./i18n.js";
 
 /** Mirrors the backend's default max_image_bytes (8 MB). The server is
  *  authoritative — this guard just avoids a pointless upload. */
@@ -179,7 +179,13 @@ export function initDiagnose({ onResult } = {}) {
 
     clear(els.badges);
     if (d.crop) els.badges.append(badge(d.crop, "badge badge--crop"));
-    if (d.disease) els.badges.append(badge(d.disease, "badge badge--dis"));
+    // A healthy leaf still needs its own read: green, not the neutral disease
+    // styling, so "Healthy Plant" lands as good news rather than a diagnosis.
+    if (d.disease) {
+      els.badges.append(
+        badge(d.disease, d.status === "healthy" ? "badge badge--healthy" : "badge badge--dis"),
+      );
+    }
     els.badges.append(badge(severity, "badge badge--sev", severity));
     if (report.status) els.badges.append(badge(report.status, "badge badge--status"));
     // Worth showing only when it explains something: a poor photo behind a
@@ -322,6 +328,9 @@ export function initDiagnose({ onResult } = {}) {
 
     const form = new FormData();
     form.append("file", picked, picked.name || "leaf");
+    // The API answers in the interface language. Without this it defaults to
+    // English, and an Arabic farmer would get an English treatment plan.
+    form.append("language", currentLang());
 
     try {
       const report = await call("/api/v1/analyze", { method: "POST", formData: form });
@@ -418,6 +427,7 @@ export function initDiagnose({ onResult } = {}) {
         disease: d.disease,
         disease_ar: d.disease_ar,
         severity: d.severity,
+        status: d.status,
         healthy: d.healthy,
       };
     },

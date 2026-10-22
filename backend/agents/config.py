@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     #: First backoff delay; doubles each retry (2s, 4s, ...).
     quota_retry_base_delay_s: float = 2.0
 
+    # --- malformed-completion retry ----------------------------------------
+    #: Regenerations when Groq rejects the completion as unparseable JSON
+    #: (HTTP 400 "Failed to validate JSON"). That fault is in the model's
+    #: answer rather than in our request, so one more draw is cheap. The delay
+    #: is deliberately much shorter than the quota backoff: this mostly bites
+    #: Arabic chat turns, where a farmer is waiting on a live conversation and
+    #: two seconds of silence reads as a hang rather than as politeness.
+    output_retry_attempts: int = 2
+    output_retry_base_delay_s: float = 0.8
+
     # --- input limits ------------------------------------------------------
     max_image_bytes: int = 8 * 1024 * 1024
     max_image_side: int = 1600

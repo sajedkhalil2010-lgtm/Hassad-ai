@@ -101,6 +101,37 @@ def is_quota_error(exc: BaseException) -> bool:
     return "RESOURCE_EXHAUSTED" in str(exc).upper()
 
 
+#: Groq validates a completion against ``response_format`` itself and rejects
+#: the request outright when the model writes JSON it cannot parse. The two
+#: messages it actually emits, both under HTTP 400.
+_MALFORMED_OUTPUT_MARKERS = (
+    "failed to validate json",
+    "failed to generate json",
+)
+
+
+def is_malformed_output_error(exc: BaseException) -> bool:
+    """Detect Groq's HTTP 400 for a completion whose JSON could not be parsed.
+
+    This is a **model** fault, not a request fault: the payload we sent was
+    well-formed, and the same payload succeeds on the next call. It is also
+    strongly language-skewed. With ``response_format=json_object`` and an
+    Arabic reply the model intermittently writes JSON that fails validation —
+    measured at roughly 1 in 6 Arabic chat turns against 0 in 6 English ones
+    on the live account — so a farmer asking in Arabic would otherwise hit a
+    "please retry" wall far more often than one asking in English.
+
+    Deliberately narrow: it requires the status code AND the exact wording,
+    so a genuine 400 (bad request, oversized payload, unsupported model) is
+    never mistaken for this and retried.
+    """
+    status = getattr(exc, "status_code", None)
+    if not (isinstance(status, int) and status == 400):
+        return False
+    text = str(exc).lower()
+    return any(marker in text for marker in _MALFORMED_OUTPUT_MARKERS)
+
+
 
 def run_with_quota_retry(
     call: Callable[[], T],
@@ -129,6 +160,41 @@ def run_with_quota_retry(
         except Exception as exc:
             last_attempt = attempt == attempts - 1
             if last_attempt or not is_quota_error(exc):
+                raise
+            sleep(base_delay_s * (2 ** attempt))
+
+    raise RuntimeError("unreachable: retry loop exhausted")  # pragma: no cover
+
+
+def run_with_output_retry(
+    call: Callable[[], T],
+    *,
+    attempts: int = 2,
+    base_delay_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Run ``call``, regenerating once when the model could not keep valid JSON.
+
+    :func:`run_with_quota_retry` covers the transport failing. This covers the
+    other transient case: the transport succeeded and the model produced a
+    completion that Groq itself refused to validate (see
+    :func:`is_malformed_output_error`). Composing the two — this helper is
+    meant to wrap a quota-retried call — means one regeneration gets its own
+    full rate-limit budget on top.
+
+    A single extra attempt is the right budget rather than three. The fault is
+    in the model's answer, not in our request, so the second draw is close to
+    independent of the first; beyond that the farmer is simply waiting.
+    """
+    if attempts < 1:
+        attempts = 1
+
+    for attempt in range(attempts):
+        try:
+            return call()
+        except Exception as exc:
+            last_attempt = attempt == attempts - 1
+            if last_attempt or not is_malformed_output_error(exc):
                 raise
             sleep(base_delay_s * (2 ** attempt))
 
