@@ -200,10 +200,23 @@ class ChatAgent:
         lines: list[str] = []
         crop = as_str(d.get("crop"), "")
         disease = as_str(d.get("disease"), "")
+        undetermined = d.get("status") == "uncertain" or d.get("uncertain") is True
         if crop:
             lines.append(f"Crop: {crop}")
         if disease:
-            lines.append(f"Diagnosed disease: {disease}")
+            # An undetermined scan is not a diagnosis. Labelling it as one
+            # would let the assistant answer "how do I treat X" from a verdict
+            # that explicitly declined to name X.
+            lines.append(
+                "Diagnosed disease: UNCONFIRMED - the scan could not confirm a disease"
+                if undetermined
+                else f"Diagnosed disease: {disease}"
+            )
+        if undetermined:
+            lines.append(
+                "This diagnosis is NOT confirmed. Do not recommend treatment for any "
+                "specific disease; advise re-photographing the leaf and scouting instead."
+            )
         if lines:
             severity = as_str(d.get("severity"), "")
             if severity:

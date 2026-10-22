@@ -341,6 +341,46 @@ LOCAL_KB: dict[str, dict[str, Any]] = {
             "حافظ على نظافة الحقل - فالبقايا والأعشاب تختزن مسببات مرض الموسم القادم.",
         ],
     },
+    "undetermined": {
+        "title": "No disease confirmed — re-photograph and monitor",
+        "title_ar": "لم يُؤكَّد أي مرض - أعد التقاط الصورة وراقب النبات",
+        "pathogen": "-",
+        "kind": "none",
+        "actions": [
+            "Do not spray anything yet. Treating an unconfirmed guess wastes product and selects for resistance.",
+            "Re-photograph: leaf flat, in focus, in daylight, filling the frame, plus one shot of the underside.",
+            "Scout the whole plant and its neighbours now, and re-run the analysis if symptoms spread.",
+        ],
+        "actions_ar": [
+            "لا ترشّ شيئًا بعد. المعالجة استنادًا إلى تخمين غير مؤكد تهدر المادة الفعّالة وتعزّز المقاومة.",
+            "أعد التقاط الصورة: الورقة مسطّحة، حادّة التركيز، بضوء النهار، ملء الإطار، مع صورة لظهر الورقة.",
+            "افحص النبات كله وجيرانه الآن، وأعد التحليل إذا انتشرت الأعراض.",
+        ],
+        "treatments": [
+            {"type": "cultural", "detail": "No curative treatment: confirm the diagnosis first, then treat the named disease at its label rate."},
+        ],
+        "treatments_ar": [
+            {"type": "cultural", "detail": "لا معالجة علاجية قبل التأكد: حدِّد المرض أولًا ثم عالجه بالجرعة المدونة على ملصق المنتج."},
+        ],
+        "irrigation": {
+            "schedule": "Keep the current schedule; do not increase watering in response to an unconfirmed read.",
+            "target": "Morning, at the soil line, keeping foliage dry.",
+            "note": "Wet foliage is the one thing that genuinely worsens most of the look-alikes.",
+        },
+        "irrigation_ar": {
+            "schedule": "حافظي على البرنامج الحالي؛ ولا تزيدي الري استنادًا إلى قراءة غير مؤكدة.",
+            "target": "صباحًا، عند خط التربة، مع إبقاء الأوراق جافة.",
+            "note": "الأوراق المبللة هي العامل الوحيد الذي يزيد فعليًا من أغلب الحالات المشتبه بها.",
+        },
+        "prevention": [
+            "Keep tools and hands clean between plants so a real infection cannot spread while you wait.",
+            "Quarantine any new plant material until it has been inspected.",
+        ],
+        "prevention_ar": [
+            "حافظ على نظافة الأدوات واليدين بين النباتات حتى لا تنتشر عدوى حقيقية أثناء الانتظار.",
+            "أعزل أي مشتريات نباتية جديدة حتى تُفحص.",
+        ],
+    },
 }
 
 #: Fallback when nothing in the KB matches: a generic, still-useful plan.
@@ -510,11 +550,29 @@ class AdvisorAgent:
     # -- KB helpers --------------------------------------------------------
 
     @staticmethod
+    def _is_undetermined(diagnosis: dict[str, Any]) -> bool:
+        """True when the diagnosis declined to name a disease.
+
+        Checked on both spellings because ``uncertain`` is the flag this
+        revision added, while ``status`` is what the vision schema emits — the
+        supervisor passes the whole diagnosis through unchanged, so either may
+        be what the caller sees.
+        """
+        return diagnosis.get("status") == "uncertain" or diagnosis.get("uncertain") is True
+
+    @staticmethod
     def _match_kb(diagnosis: dict[str, Any]) -> dict[str, Any]:
         """Pick the best local KB entry for a diagnosis."""
         disease = as_str(diagnosis.get("disease"), "").lower()
         pathology = as_str(diagnosis.get("pathology"), "").lower()
         blob = f"{disease} {pathology}"
+
+        # An undetermined verdict is routed before any keyword pass. Matching
+        # "undetermined pathology" against the disease table would land on a
+        # curative plan for a disease nobody has confirmed, which is exactly
+        # the false positive this state exists to prevent.
+        if AdvisorAgent._is_undetermined(diagnosis):
+            return LOCAL_KB["undetermined"]
 
         if not disease or diagnosis.get("healthy") is True:
             return LOCAL_KB["healthy"]
@@ -622,6 +680,14 @@ class AdvisorAgent:
         else:
             treatments = kb_plan["treatments"]
 
+        # An undetermined verdict may not carry a curative programme, whatever
+        # the advisory model produced. Applying a chemical is an assertion that
+        # a disease exists — and the diagnosis explicitly declined to make one.
+        # The KB's "undetermined" plan (cultural only, no spray) is the whole
+        # answer here, so the model's take on the *guessed* disease is dropped.
+        if self._is_undetermined(diagnosis):
+            treatments = kb_plan["treatments"]
+
         irrigation = remote.get("irrigation_schedule")
         irrigation = irrigation if isinstance(irrigation, dict) else {}
         kb_irrig = as_dict(kb_plan.get("irrigation_schedule"))
@@ -661,7 +727,10 @@ class AdvisorAgent:
             {
                 "status": diagnosis.get("status"),
                 "healthy": diagnosis.get("healthy"),
+                "uncertain": diagnosis.get("uncertain"),
                 "crop": diagnosis.get("crop"),
+                "crop_ar": diagnosis.get("crop_ar"),
+                "species_confidence": diagnosis.get("species_confidence"),
                 "disease": diagnosis.get("disease"),
                 "disease_ar": diagnosis.get("disease_ar"),
                 "pathogen": diagnosis.get("pathogen"),
@@ -705,6 +774,11 @@ Rules:
 - If "status" is "healthy" or "healthy" is true, return a PREVENTION-ONLY plan:
   no chemical treatment, no curative dose. It is a healthy plant, so the plan
   is scouting, balanced nutrition and irrigation hygiene.
+- If "status" is "uncertain", the diagnosis could not confirm a disease.
+  Return a VERIFY-THEN-DECIDE plan: re-photographing guidance, close scouting
+  and prevention only. Do NOT name a disease as if confirmed, do NOT give a
+  curative or chemical dose, and do NOT raise "severity". Say plainly that the
+  cause is unconfirmed.
 - Never invent a dose. If you are not confident of a rate, say so in the note
   rather than guessing.
 """.replace("__LANG_NAME__", LANG_NAME.get(language, LANG_NAME[DEFAULT_LANGUAGE]))

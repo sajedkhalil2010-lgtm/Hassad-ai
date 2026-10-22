@@ -55,8 +55,10 @@ from .language import (
 _DIAGNOSTIC_JSON_SHAPE = """\
 {
   "is_leaf_image": true,
-  "status": "healthy|diseased",
   "crop": "tomato",
+  "crop_ar": "طماطم",
+  "species_confidence": 0.0,
+  "status": "healthy|diseased|uncertain",
   "disease": "Early blight",
   "disease_ar": "اللفحة المبكرة",
   "pathogen": "Alternaria solani",
@@ -77,22 +79,46 @@ _DIAGNOSTIC_JSON_SHAPE = """\
 _PROMPT_TEMPLATE = """\
 You are a plant-pathologist AI examining ONE crop-leaf photograph.
 
-Work in TWO steps, in this order.
+Work in THREE steps, in this order.
 
-STEP 1 - CLASSIFY BEFORE YOU DIAGNOSE (this gates everything else).
-Decide whether the leaf is healthy or pathological. "Healthy" means the blade
-shows ZERO lesions, ZERO abnormal discolouration, ZERO fungal or bacterial
-growth, and ZERO pest damage. Natural variation in colour and shape is not
-disease.
+STEP 1 - IDENTIFY THE PLANT (this gates everything else).
+Name the plant species you actually see in "crop" (and its script twin in
+"crop_ar"), and record how sure you are in "species_confidence" (float 0-1).
+Judge from leaf shape, margin, venation, arrangement and surface texture.
+  - Do NOT assume the plant is a crop you were told about, and NEVER assume
+    it is tomato. Lavender, sage, olive, mint, basil, rose, cactus and most
+    ornamentals are not tomato, and a leaf that is not a Solanaceous crop
+    cannot be given a tomato disease.
+  - If you cannot identify the plant, say so in "crop" and use your best
+    guess; do not invent a species to fill the field.
+
+STEP 2 - CLASSIFY BEFORE YOU DIAGNOSE (this gates step 3).
+Decide whether the leaf is healthy or pathological. "Healthy" means ZERO
+lesions, ZERO abnormal discolouration, ZERO fungal or bacterial growth, and
+ZERO pest damage. Natural variation in colour and shape is not disease.
+NATURAL SURFACE FEATURES ARE NOT SYMPTOMS. Trichomes (fine hairs/fuzz), a
+silvery or grey felty sheen, a white waxy bloom, dust, pollen, natural
+variegation, cultivar colour, age-related yellowing of one lower leaf,
+mechanical tears and flash glare are all NORMAL tissue or NORMAL photography.
+Lavender, sage, mint, olive and many ornamentals are naturally hairy or
+silvery - that fuzz is not powdery mildew, and pale grey-green foliage is not
+a nutrient deficiency. Only discrete lesions with defined borders, spreading
+necrosis, pustules, or growth sitting ON the surface count as pathological.
   - HEALTHY -> "status" = "healthy", "disease" = "Healthy Plant",
     "disease_ar" = "نبات سليم", "pathogen" = "None", "severity" = "none",
-    "severity_pct" = 0.0, and make "recommendations" purely care and
-    prevention advice (scouting, balanced feeding, irrigation hygiene).
-  - ANYTHING PATHOLOGICAL -> "status" = "diseased" and continue to step 2.
+    "severity_pct" = 0.0, "symptoms" = [], "differential" = [], and make
+    "recommendations" purely care and prevention advice (scouting, balanced
+    feeding, irrigation hygiene).
+  - UNCERTAIN -> "status" = "uncertain" when the image is blurred, glare-hit,
+    too dark, taken at a bad angle, not clearly a leaf, or when the features
+    you see could plausibly be natural. Fill "disease" with your best guess
+    prefixed by "Possible: " and lower "confidence".
+  - PATHOLOGICAL -> "status" = "diseased" and continue to step 3.
 Do NOT invent a disease in order to be helpful. A wrong disease name sends a
-farmer to spray something their healthy crop did not need.
+farmer to spray something their healthy crop did not need. Reporting "healthy"
+or "uncertain" when you are not sure is the CORRECT answer, not a failure.
 
-STEP 2 - IDENTIFY (only when "status" is "diseased").
+STEP 3 - IDENTIFY (only when "status" is "diseased").
 Name the single most likely condition and ground it in what is actually
 visible in this image. Distinguish between the patterns that separate the
 common look-alikes:
@@ -100,8 +126,9 @@ common look-alikes:
   - blight -> expanding necrotic lesions; early blight shows concentric
     "target-board" rings, late blight shows water-soaked dark patches with
     pale haloes and can be followed by white fuzzy growth underneath
-  - powdery / downy mildew -> superficial white-grey colonisation, downy
-    being angular and confined by veins
+  - powdery / downy mildew -> discrete white-grey COLONIES growing on the
+    surface, powdery spreading between veins, downy angular and confined by
+    veins. An evenly fuzzy or silvery leaf is NOT mildew.
   - pest damage -> chewing, mines, stippling, or frass; say so rather than
     calling it a fungus
   - nutrient deficiency -> a symmetric pattern (interveinal chlorosis,
@@ -110,6 +137,13 @@ State the primary symptoms you can see, list at least one plausible
 alternative in "differential", and give a concrete ordered treatment
 sequence in "recommendations".
 
+CONFIDENCE RULE - apply it in step 2, not after.
+"confidence" is how sure you are of your FINAL "status". A disease may only be
+reported at "confidence" >= 0.70. If you are less than 0.70 sure that the leaf
+is diseased, you MUST output "status" = "uncertain" instead of naming a
+severe disease. Severity does not raise confidence: a dramatic-looking leaf
+you cannot clearly identify is still "uncertain".
+
 Return ONLY a JSON object with EXACTLY this shape (no prose, no markdown fences):
 
 __SCHEMA__
@@ -117,17 +151,17 @@ __SCHEMA__
 __LANGUAGE__
 
 Rules:
-- "status" is EXACTLY "healthy" or "diseased" — no other value, no blanks.
+- "status" is EXACTLY "healthy", "diseased" or "uncertain" — no other value,
+  no blanks. Default to "uncertain" rather than guessing.
 - "status" = "healthy" only when you have positively confirmed a healthy
-  leaf. Anything you cannot verify (blur, glare, a non-leaf photograph,
-  insufficient detail) must be reported as "diseased" so the farmer is not
-  told a plant is fine when you could not actually see it.
-- "confidence" and "severity_pct" are floats in [0,1].
+  leaf, and never as a way of being polite about a poor photo - a poor photo
+  is "uncertain".
+- "confidence" and "severity_pct" and "species_confidence" are floats in [0,1].
 - Be honest: if the image is blurry, over-exposed or not a leaf, lower
   "confidence" and say so in "confidence_basis"; still fill every field.
-- "disease" is ALWAYS the English disease name and "disease_ar" is ALWAYS
-  natural Arabic — both, in every response, whichever language you are
-  writing the rest in.
+- "crop" and "disease" are ALWAYS in English and "crop_ar" and "disease_ar"
+  are ALWAYS natural Arabic — all four, in every response, whichever language
+  you are writing the rest in.
 - "pathology", "symptoms", "confidence_basis", "differential" and
   "recommendations" must be written in __LANG_NAME__, because that is the
   language the farmer is reading.
@@ -190,6 +224,46 @@ _TREATMENT_FALLBACK_AR = [
 
 #: Confidence below this is flagged for the supervisor to treat cautiously.
 LOW_CONFIDENCE_THRESHOLD = 0.55
+
+
+#: Confidence below which a "diseased" verdict is not allowed to stand. The
+#: prompt asks the model to self-apply it, but a prompt is a request, not a
+#: guarantee, so the floor is re-applied here: a fuzzy silvery leaf the model
+#: called "powdery mildew" at 0.45 confidence must not reach a farmer as a
+#: severe diagnosis. This is deliberately stricter than
+#: :data:`LOW_CONFIDENCE_THRESHOLD`, which only flags a verdict for caution
+#: and leaves it standing.
+CONFIDENCE_FLOOR = 0.70
+
+#: How confidently the species itself must be named before a pathological
+#: verdict built on that species can stand. Below this the read is uncertain,
+#: because treating a lavender leaf as a tomato is how mildew gets invented.
+SPECIES_CONFIDENCE_FLOOR = 0.50
+
+#: Labels for "we could not confirm a disease", in both scripts. The UI shows
+#: them side by side, and an uncertain verdict must read as uncertain in
+#: Arabic too - not as an English word stranded next to Arabic advice.
+_UNCERTAIN_LABEL_EN = "Undetermined pathology"
+_UNCERTAIN_LABEL_AR = "ظهور مرض غير محدد"
+
+
+#: What an uncertain verdict actually needs: a better photo, not a spray
+#: schedule. Both languages are supplied locally so the KB fallback stays
+#: usable offline, exactly like the healthy-care tips above.
+_UNCERTAIN_TIPS: dict[str, list[str]] = {
+    "en": [
+        "Re-photograph the leaf: flat, in focus, in daylight, filling the frame, with no glare.",
+        "Include a second photo of the leaf underside - many pests and fungi only show there.",
+        "Do not spray anything yet. Treat only once a disease has actually been confirmed.",
+        "Check the rest of the plant now and re-run the analysis if symptoms spread.",
+    ],
+    "ar": [
+        "أعد التقاط صورة للورقة: مسطّحة، حادّة التركيز، بضوء النهار، ملء الإطار، وبدون انعكاس.",
+        "أضف صورة ثانية لظهر الورقة؛ فكثير من الآفات والأمراض الفطرية لا تظهر إلا من هناك.",
+        "لا ترشّ شيئًا بعد. العالِج فقط بعد التأكد الفعلي من وجود مرض.",
+        "افحص باقي النبات الآن وأعد التحليل إذا انتشرت الأعراض.",
+    ],
+}
 
 
 class DiagnosticAgent:
@@ -379,12 +453,18 @@ class DiagnosticAgent:
     ) -> dict[str, Any]:
         """Coerce untrusted model output into a stable, typed shape.
 
-        ``status`` is the authority for the healthy/pathological split. The
+        ``status`` is the authority for the healthy/pathological split, and it
+        now has three values: ``healthy``, ``diseased`` and ``uncertain``. The
         model is instructed to emit it directly, so the old heuristic — a
         string match on ``disease`` — now only runs as a fallback for a model
         that predates the field. That order matters: a classifier asked "is
         this healthy?" should not have its answer overridden by the name it
         happened to give afterwards.
+
+        A ``diseased`` verdict can be *downgraded* to ``uncertain`` here, but
+        never the reverse. The reasons are all in the block below; they exist
+        because the cost of a false "diseased" is a farmer spraying a healthy
+        crop, which is strictly worse than asking them for a better photo.
         """
         report = as_dict(report)
         symptoms = as_str_list(report.get("symptoms"))
@@ -397,12 +477,46 @@ class DiagnosticAgent:
 
         disease = as_str(report.get("disease"), "Unknown")
         crop = as_str(report.get("crop"), "Unknown")
+        crop_ar = as_str(report.get("crop_ar"), "")
+        species_confidence = clamp01(report.get("species_confidence"), 0.0)
 
         status = as_str(report.get("status"), "").strip().lower()
-        if status not in {"healthy", "diseased"}:
+        if status not in {"healthy", "diseased", "uncertain"}:
             # Fallback for a model that answered in the pre-`status` shape.
             status = "healthy" if disease.lower() in _HEALTHY_DISEASE_NAMES else "diseased"
+
+        # --- hard guardrails against a hallucinated pathology -------------
+        # The prompt asks the model to self-apply every one of these; none of
+        # them can be trusted to a request, because the failure they prevent is
+        # a farmer spraying a healthy plant. So each is re-checked here, and
+        # each can only ever downgrade "diseased" -> "uncertain", never the
+        # other way: we never promote a verdict the model did not stand behind.
+        downgrade = None
+        if status == "diseased":
+            if not bool(report.get("is_leaf_image", True)):
+                downgrade = "not a verifiable leaf"
+            elif disease.lower() in _HEALTHY_DISEASE_NAMES:
+                # `status` says sick but the only label we have says healthy.
+                downgrade = "contradictory healthy label"
+            elif confidence < CONFIDENCE_FLOOR:
+                downgrade = f"confidence {confidence:.2f} below the {CONFIDENCE_FLOOR:.2f} floor"
+            elif "species_confidence" in report and species_confidence < SPECIES_CONFIDENCE_FLOOR:
+                # Only charged when the model actually answered. A payload
+                # from before this field existed is silent, not uncertain, and
+                # silence must not silently downgrade a real diagnosis.
+                downgrade = f"species confidence {species_confidence:.2f} below the floor"
+        if downgrade is not None:
+            status = "uncertain"
+            # The model's own guess is kept as a differential rather than
+            # deleted: it is a real hypothesis, just not one we will assert.
+            guess = as_str(report.get("disease"), "").strip()
+            if guess and guess.lower() not in _HEALTHY_DISEASE_NAMES:
+                differential = [f"Possible: {guess}"] + [
+                    d for d in differential if d.lower() != guess.lower()
+                ]
+
         healthy = status == "healthy"
+        uncertain = status == "uncertain"
 
         if healthy:
             # A confirmed-healthy leaf must read as one in both scripts, not
@@ -415,15 +529,19 @@ class DiagnosticAgent:
             symptoms = []
             differential = []
             recommendations = recommendations or _HEALTHY_TIPS[language][:2]
+        elif uncertain:
+            # An undetermined verdict must not look like a diagnosis: no
+            # disease name, no severity ring worth alarming over, and advice
+            # about the photograph rather than about a chemical.
+            disease = _UNCERTAIN_LABEL_EN
+            disease_ar = _UNCERTAIN_LABEL_AR
+            pathogen = as_str(report.get("pathogen"), "Unknown")
+            severity = "low"
+            severity_pct = min(severity_pct, 0.25)
+            recommendations = _UNCERTAIN_TIPS[language]
         else:
             disease_ar = as_str(report.get("disease_ar"), "غير معروف")
             pathogen = as_str(report.get("pathogen"), "Unknown")
-            if disease.lower() in _HEALTHY_DISEASE_NAMES:
-                # `status` says sick but the only label we have says healthy.
-                # Reporting "Healthy" here would undo the whole classification,
-                # so say plainly that something is wrong and we cannot name it.
-                disease = "Undetermined pathology"
-                disease_ar = "ظهور مرض غير محدد"
             if not recommendations:
                 recommendations = (
                     _TREATMENT_FALLBACK_AR
@@ -439,7 +557,10 @@ class DiagnosticAgent:
             "is_leaf_image": bool(report.get("is_leaf_image", True)),
             "status": status,
             "healthy": healthy,
+            "uncertain": uncertain,
             "crop": crop,
+            "crop_ar": crop_ar,
+            "species_confidence": species_confidence,
             "disease": disease,
             "disease_ar": disease_ar,
             "pathogen": pathogen,
@@ -449,7 +570,10 @@ class DiagnosticAgent:
             "severity_pct": severity_pct,
             "confidence": confidence,
             "confidence_basis": as_str(report.get("confidence_basis"), ""),
-            "low_confidence": confidence < LOW_CONFIDENCE_THRESHOLD,
+            # An undetermined verdict is by definition not a confident one, so
+            # it flags itself for the supervisor's "provisional" status even
+            # when the model reported a high number for the guess it made.
+            "low_confidence": uncertain or confidence < LOW_CONFIDENCE_THRESHOLD,
             "recommendations": recommendations,
             "differential": differential,
             "image_quality": quality,
@@ -460,8 +584,14 @@ class DiagnosticAgent:
                 "filename": filename,
                 "latency_ms": elapsed_ms,
                 "language": language,
+                "downgraded_from": downgrade,
             },
         }
 
 
-__all__ = ["DiagnosticAgent", "LOW_CONFIDENCE_THRESHOLD"]
+__all__ = [
+    "DiagnosticAgent",
+    "LOW_CONFIDENCE_THRESHOLD",
+    "CONFIDENCE_FLOOR",
+    "SPECIES_CONFIDENCE_FLOOR",
+]

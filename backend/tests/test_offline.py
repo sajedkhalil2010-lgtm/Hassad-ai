@@ -197,11 +197,90 @@ def main() -> int:
                                             mime="image/jpeg", model="m", elapsed_ms=1,
                                             filename=None, language="ar")["recommendations"][0]))
 
+    print("\n=== 3c. False-positive guardrails (no hallucinated pathology) ===")
+    from agents.diagnostic_agent import CONFIDENCE_FLOOR, SPECIES_CONFIDENCE_FLOOR
+
+    def _norm(**kw):
+        return norm(dict(base_report, **kw), mime="image/jpeg", model="m",
+                    elapsed_ms=1, filename=None)
+
+    check("confidence floor is 0.70", abs(CONFIDENCE_FLOOR - 0.70) < 1e-9)
+    check("species floor is 0.50", abs(SPECIES_CONFIDENCE_FLOOR - 0.50) < 1e-9)
+
+    # The lavender case: a fuzzy silvery leaf the model called mildew at 0.45.
+    fuzzy = _norm(status="diseased", disease="Powdery Mildew", confidence=0.45,
+                  species_confidence=0.9, crop="Lavender", severity="high",
+                  severity_pct=0.9, differential=["Natural trichomes"])
+    check("low-confidence diseased is downgraded to uncertain",
+          fuzzy["status"] == "uncertain", f"got {fuzzy['status']!r}")
+    check("uncertain is not healthy", fuzzy["healthy"] is False)
+    check("uncertain flag raised", fuzzy["uncertain"] is True)
+    check("guessed disease is not asserted as the name", fuzzy["disease"] == "Undetermined pathology")
+    check("guessed disease survives as a differential",
+          any("Powdery Mildew" in d for d in fuzzy["differential"]),
+          f"got {fuzzy['differential']!r}")
+    check("uncertain clamps a severe severity", fuzzy["severity"] == "low")
+    check("uncertain clamps the severity ring", fuzzy["severity_pct"] <= 0.25)
+    check("uncertain advice is about the photo, not a spray",
+          any("photograph" in r.lower() for r in fuzzy["recommendations"]))
+    check("uncertain carries an Arabic name", any(ord(c) > 0x0600 for c in fuzzy["disease_ar"]))
+    check("uncertain is flagged low_confidence", fuzzy["low_confidence"] is True)
+    check("downgrade reason recorded for the audit trail",
+          "0.70 floor" in (fuzzy["meta"]["downgraded_from"] or ""), f"got {fuzzy['meta']['downgraded_from']!r}")
+
+    # A confident, well-identified disease must still stand.
+    confident = _norm(status="diseased", disease="Early blight", confidence=0.92,
+                      species_confidence=0.95)
+    check("confident diseased survives the floor", confident["status"] == "diseased")
+    check("confident diseased keeps its name", confident["disease"] == "Early blight")
+    check("confident diseased is not flagged", confident["low_confidence"] is False)
+
+    # Unknown species + a disease name is how "tomato" gets invented.
+    wrong_species = _norm(status="diseased", disease="Early blight", confidence=0.88,
+                          species_confidence=0.2, crop="Unknown")
+    check("low species confidence is downgraded",
+          wrong_species["status"] == "uncertain", f"got {wrong_species['status']!r}")
+
+    # A payload predating species_confidence must not be silently downgraded.
+    legacy_species = norm({"status": "diseased", "disease": "Early blight", "confidence": 0.88,
+                           "crop": "Tomato"}, mime="image/jpeg", model="m", elapsed_ms=1,
+                          filename=None)
+    check("absent species_confidence does not downgrade",
+          legacy_species["status"] == "diseased", f"got {legacy_species['status']!r}")
+
+    # A non-leaf photograph can never be a diagnosis.
+    not_leaf = _norm(status="diseased", disease="Late blight", confidence=0.95,
+                     is_leaf_image=False)
+    check("a non-leaf image cannot carry a diagnosis",
+          not_leaf["status"] == "uncertain", f"got {not_leaf['status']!r}")
+
+    # An already-uncertain verdict is passed through untouched by the floors.
+    explicit = _norm(status="uncertain", disease="Possible: Rust", confidence=0.4)
+    check("explicit uncertain is preserved", explicit["status"] == "uncertain")
+    check("explicit uncertain clears the disease name",
+          explicit["disease"] == "Undetermined pathology")
+    check("explicit uncertain lowers its severity", explicit["severity"] == "low")
+
+    ar_uncertain = norm(dict(base_report, status="uncertain", disease="Possible: Rust",
+                             confidence=0.4), mime="image/jpeg", model="m", elapsed_ms=1,
+                        filename=None, language="ar")
+    check("arabic uncertain advice is Arabic",
+          any(ord(c) > 0x0600 for c in ar_uncertain["recommendations"][0]))
+    check("arabic uncertain records language", ar_uncertain["meta"]["language"] == "ar")
+    check("uncertain verdicts cannot be promoted by the floors",
+          norm(dict(base_report, status="healthy", confidence=0.2),
+               mime="image/jpeg", model="m", elapsed_ms=1, filename=None)["status"] == "healthy")
+
+    print("\n=== 3d. Prompt language and shape ===")
     prompt_en = _build_prompt("en")
     prompt_ar = _build_prompt("ar")
-    check("prompt demands a status field", '"status": "healthy|diseased"' in prompt_en)
+    check("prompt demands a status field", '"status": "healthy|diseased|uncertain"' in prompt_en)
     check("prompt gates step 2 behind status", "STEP 1" in prompt_en and "STEP 2" in prompt_en)
+    check("prompt tells the model to identify the species first", "IDENTIFY THE PLANT" in prompt_en)
     check("prompt tells the model to check for health first", "CLASSIFY BEFORE YOU DIAGNOSE" in prompt_en)
+    check("prompt tells the model not to default to tomato", "NEVER assume" in prompt_en)
+    check("prompt warns that fuzz is not mildew", "trichomes" in prompt_en.lower())
+    check("prompt sets the 0.70 confidence floor", ">= 0.70" in prompt_en)
     check("prompt names the Arabic label for healthy", "نبات سليم" in prompt_en)
     check("prompt pins English", "English" in prompt_en and "Arabic" not in prompt_en.split("Rules:")[0].replace("العربية", ""))
     check("prompt pins Arabic", "Arabic" in prompt_ar)

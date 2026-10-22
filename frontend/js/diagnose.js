@@ -179,12 +179,16 @@ export function initDiagnose({ onResult } = {}) {
 
     clear(els.badges);
     if (d.crop) els.badges.append(badge(d.crop, "badge badge--crop"));
-    // A healthy leaf still needs its own read: green, not the neutral disease
-    // styling, so "Healthy Plant" lands as good news rather than a diagnosis.
+    // Three verdicts, three reads: green is good news, amber means "we could
+    // not confirm anything", and the neutral styling stays for a real disease
+    // name. Getting this wrong is what makes an uncertain scan look like a
+    // diagnosis to a farmer scanning the screen quickly.
     if (d.disease) {
-      els.badges.append(
-        badge(d.disease, d.status === "healthy" ? "badge badge--healthy" : "badge badge--dis"),
-      );
+      const tone =
+        d.status === "healthy" ? "badge badge--healthy" :
+        d.status === "uncertain" ? "badge badge--uncertain" :
+        "badge badge--dis";
+      els.badges.append(badge(d.disease, tone));
     }
     els.badges.append(badge(severity, "badge badge--sev", severity));
     if (report.status) els.badges.append(badge(report.status, "badge badge--status"));
@@ -424,11 +428,16 @@ export function initDiagnose({ onResult } = {}) {
       if (!d) return null;
       return {
         crop: d.crop,
+        crop_ar: d.crop_ar,
         disease: d.disease,
         disease_ar: d.disease_ar,
         severity: d.severity,
         status: d.status,
         healthy: d.healthy,
+        // Chat must not treat an undetermined scan as a diagnosis: the
+        // assistant is told the cause was never confirmed.
+        uncertain: Boolean(d.uncertain),
+        confidence: d.confidence,
       };
     },
   };

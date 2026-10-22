@@ -193,7 +193,7 @@ def main():
     check("requested language reaches meta", hr.data["meta"]["language"] == "ar")
 
     sent = str((hc.last_call.get("messages") or [{}])[0])
-    check("vision prompt asks for a status field", '"status": "healthy|diseased"' in sent)
+    check("vision prompt asks for a status field", '"status": "healthy|diseased|uncertain"' in sent)
     check("vision prompt asks for a two-step read", "STEP 1" in sent and "STEP 2" in sent)
     check("vision prompt names the response language", "Arabic" in sent)
 
