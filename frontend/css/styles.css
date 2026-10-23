@@ -693,6 +693,10 @@ body[data-theme="light"] .ico-moon { display: none; }
 /* "Undetermined" is neither news nor a diagnosis: amber signals "look again"
    without the red that would read as a confirmed disease. */
 .badge--uncertain { color: #fde68a; border-color: rgba(251,191,36,.34); background: rgba(251,191,36,.10); }
+.badge--probable  { color: #fde68a; border-color: rgba(251,191,36,.55); background: rgba(251,191,36,.15); font-weight: 600; }
+/* A probable name must not read as a confirmed one even if the badge row is
+   skimmed: italic, and barred in the same amber as the confidence ring. */
+.verdict__ar.is-provisional { font-style: italic; opacity: .95; border-inline-start: 3px solid rgba(251,191,36,.65); padding-inline-start: .55em; }
 .badge--sev[data-sev="none"], .badge--sev[data-sev="low"]      { color: #86efac; border-color: rgba(34,197,94,.34);  background: rgba(34,197,94,.10); }
 .badge--sev[data-sev="moderate"]                                { color: #fde68a; border-color: rgba(251,191,36,.34); background: rgba(251,191,36,.10); }
 .badge--sev[data-sev="high"]                                    { color: #fed7aa; border-color: rgba(251,146,60,.34); background: rgba(251,146,60,.10); }

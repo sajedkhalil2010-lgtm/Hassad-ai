@@ -174,6 +174,18 @@ export function initDiagnose({ onResult } = {}) {
     els.ringSeverity.setAttribute("data-sev", severity);
     els.sevNum.textContent = String(severityPct);
 
+    // An undetermined verdict still carries the model's best HYPOTHESIS, but
+    // in its own field — `disease`/`disease_ar` stay masked by design, because
+    // a confident name on a low-confidence read is what sends a farmer to
+    // spray a healthy crop. Showing the lead is the honest middle ground, and
+    // it is only ever welded to a marker: the payload underneath still says
+    // status:"uncertain" and low_confidence:true, and no treatment is
+    // attached to the name.
+    const provisional = d.status === "uncertain"
+      ? (d.provisional_disease || d.provisional_disease_ar || "")
+      : "";
+    const probable = Boolean(provisional);
+
     clear(els.badges);
     if (d.crop) els.badges.append(badge(d.crop, "badge badge--crop"));
     // Three verdicts, three reads: green is good news, amber means "we could
@@ -185,8 +197,12 @@ export function initDiagnose({ onResult } = {}) {
         d.status === "healthy" ? "badge badge--healthy" :
         d.status === "uncertain" ? "badge badge--uncertain" :
         "badge badge--dis";
-      els.badges.append(badge(d.disease, tone));
+      els.badges.append(badge(probable ? provisional : d.disease, tone));
     }
+    // Sits directly beside the name so the two read as a single statement —
+    // "this is a guess" — rather than as a diagnosis with its caveat printed
+    // somewhere the eye never reaches.
+    if (probable) els.badges.append(badge(t("badge_probable"), "badge badge--probable"));
     els.badges.append(badge(severity, "badge badge--sev", severity));
     if (report.status) els.badges.append(badge(report.status, "badge badge--status"));
     // Worth showing only when it explains something: a poor photo behind a
@@ -201,8 +217,15 @@ export function initDiagnose({ onResult } = {}) {
     els.verdictCrop.textContent = cropLine;
     show(els.verdictCrop, Boolean(cropLine));
 
-    els.verdictAr.textContent = d.disease_ar || "";
-    show(els.verdictAr, Boolean(d.disease_ar));
+    // The Arabic line mirrors the badge: the probable name when there is one,
+    // otherwise the masked label. Also marked in CSS, so a name cannot read as
+    // confirmed even if the badge row is skimmed.
+    const titleAr = probable
+      ? (d.provisional_disease_ar || d.disease_ar || "")
+      : (d.disease_ar || "");
+    els.verdictAr.textContent = titleAr;
+    els.verdictAr.classList.toggle("is-provisional", probable);
+    show(els.verdictAr, Boolean(titleAr));
 
     // This verdict now describes the leaf currently in the preview.
     els.summary.classList.remove("is-stale");

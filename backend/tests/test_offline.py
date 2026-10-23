@@ -288,6 +288,147 @@ def main() -> int:
     check("both prompts carry the identical JSON shape",
           _DIAGNOSTIC_JSON_SHAPE in prompt_en and _DIAGNOSTIC_JSON_SHAPE in prompt_ar)
 
+    print("\n=== 3d. Universal pathology domains + response contract ===")
+    from agents.diagnostic_agent import MATCHED_CATEGORIES, MATCHED_CATEGORY_NONE
+
+    def shape(**overrides):
+        return norm(dict(base_report, **overrides), mime="image/jpeg",
+                    model="m", elapsed_ms=1, filename=None)
+
+    # The taxonomy has to reach the model as a handful of RULES, not as a
+    # disease dump. A few hundred entries inlined here would add thousands of
+    # tokens to a prompt that already carries an image, and the request would
+    # 400 on every call — so the budget is asserted, not assumed.
+    check("prompt names every agronomic domain",
+          all(f'"{d}"' in prompt_en for d in MATCHED_CATEGORIES))
+    check("prompt asks for matched_category", '"matched_category"' in prompt_en)
+    check("prompt tells the model to draw on its full knowledge",
+          "full breadth" in prompt_en.lower())
+    check("treatment covers irrigation and nutrition, not only a spray",
+          "irrigation, nutrition" in prompt_en.lower())
+    check("prompt stays inside a context-safe budget",
+          max(len(prompt_en), len(prompt_ar)) < 12000,
+          f"en={len(prompt_en)} ar={len(prompt_ar)} chars")
+    check("no pathogen genus list is inlined into the prompt",
+          "Meloidogyne" not in prompt_en and "Pratylenchus" not in prompt_en)
+
+    eight = ("detected_plant", "condition_type", "matched_category",
+             "disease_name_en", "disease_name_ar", "confidence_score",
+             "analysis_details", "treatment_plan")
+    for label, overrides in (
+        ("healthy", dict(status="healthy", disease="Healthy Plant", disease_ar="نبات سليم")),
+        ("diseased", dict(status="diseased", disease="Early blight", disease_ar="اللفحة المبكرة")),
+        ("uncertain", dict(status="uncertain", disease="Possible: Rust", confidence=0.4)),
+    ):
+        out = shape(**overrides)
+        missing = [k for k in eight if k not in out]
+        check(f"{label} carries every contract field", not missing, f"missing {missing}")
+        check(f"{label} leaves the legacy keys intact",
+              all(k in out for k in ("crop", "disease", "confidence",
+                                     "recommendations", "status")),
+              str([k for k in ("crop", "disease", "confidence", "recommendations", "status")
+                   if k not in out]))
+        check(f"{label} analysis_details is never blank",
+              bool(str(out["analysis_details"]).strip()))
+        check(f"{label} matched_category is never blank", bool(out["matched_category"]))
+        check(f"{label} disease_name_en mirrors disease",
+              out["disease_name_en"] == out["disease"])
+        check(f"{label} disease_name_ar mirrors disease_ar",
+              out["disease_name_ar"] == out["disease_ar"])
+        check(f"{label} treatment_plan mirrors recommendations",
+              out["treatment_plan"] == out["recommendations"])
+
+    check("the interim field names were retired",
+          "detailed_analysis" not in shape(status="diseased", disease="X")
+          and "recommended_treatment" not in shape(status="diseased", disease="X"))
+
+    check("a healthy plant has no domain",
+          shape(status="healthy", disease="Healthy Plant")["matched_category"]
+          == MATCHED_CATEGORY_NONE)
+    check("a pathogen genus names its own domain",
+          shape(status="diseased", disease="Citrus canker", pathogen="Xanthomonas citri",
+                confidence=0.92)["matched_category"] == "Bacterial Pathogen")
+    check("a virology read resolves to the viral domain",
+          shape(status="diseased", disease="Mosaic", pathogen="TMV",
+                confidence=0.92)["matched_category"] == "Viral & Viroid")
+    check("a root-knot read resolves to the nematode domain",
+          shape(status="diseased", disease="Root-knot", pathogen="Meloidogyne",
+                confidence=0.92)["matched_category"] == "Nematode & Root Parasite")
+
+    # An insect gall is not crown gall, and crown gall is not a nutrient
+    # problem — so the coarse class outranks any symptom word, and a disease
+    # with no other signal falls to the documented fungal prior rather than
+    # being silently labelled with a confident wrong domain.
+    check("an insect gall keeps the structural domain",
+          shape(status="diseased", disease="Leaf galls", condition_type="Insect Damage",
+                pathogen="Unknown", confidence=0.92)["matched_category"]
+          == "Insect & Structural Damage")
+    check("abiotic injury folds into the physiological domain",
+          shape(status="diseased", disease="Unknown", condition_type="Environmental Stress",
+                pathogen="Unknown", confidence=0.92)["matched_category"]
+          == "Physiological & Abiotic")
+    check("a nutrient disorder folds into the physiological domain",
+          shape(status="diseased", disease="Unknown", condition_type="Nutrient Deficiency",
+                pathogen="Unknown", confidence=0.92)["matched_category"]
+          == "Physiological & Abiotic")
+    check("a bare disease falls back to the fungal prior",
+          shape(status="diseased", disease="Unknown", pathogen="Unknown",
+                confidence=0.92)["matched_category"] == "Fungal Pathogen")
+
+    # A domain is metadata about a verdict, never a way to lift one: the
+    # lavender regression that this whole guardrail exists to prevent.
+    guarded = shape(status="diseased", disease="Powdery Mildew", confidence=0.45,
+                    species_confidence=0.9, crop="Lavender", severity="high",
+                    severity_pct=0.9, differential=["Natural trichomes"])
+    check("a domain never rescues a sub-floor verdict", guarded["status"] == "uncertain")
+    check("an undetermined verdict still names no disease",
+          guarded["disease_name_en"] == "Undetermined pathology")
+    check("an undetermined verdict still gets a domain",
+          guarded["matched_category"] in MATCHED_CATEGORIES)
+    check("an undetermined verdict still keeps its hypotheses",
+          any("Powdery Mildew" in d for d in guarded["differential"]))
+
+    # The probable name is a LEAD, never a diagnosis. The mask on
+    # `disease`/`disease_ar` is deliberately untouched so nothing downstream
+    # can mistake it for confirmed, but a farmer is no longer shown a blank
+    # label either.
+    check("an undetermined verdict exposes the model's guess",
+          guarded["provisional_disease"] == "Powdery Mildew",
+          f"got {guarded['provisional_disease']!r}")
+    check("the guess is not restored into the masked name",
+          guarded["disease"] == "Undetermined pathology"
+          and "Powdery Mildew" not in guarded["disease"])
+    check("a healthy plant carries no probable name",
+          shape(status="healthy", disease="Healthy Plant")["provisional_disease"] == "")
+    check("a confirmed diagnosis carries no probable name",
+          shape(status="diseased", disease="Early blight")["provisional_disease"] == "")
+    check("provisional fields are blank strings, never null",
+          shape(status="healthy", disease="Healthy Plant")["provisional_disease"] == ""
+          and shape(status="healthy", disease="Healthy Plant")["provisional_disease_ar"] == "")
+
+    # The sanitizer must refuse our own masking labels and healthy verdicts —
+    # echoing either back as a *probable disease* would be worse than the
+    # blank label this field exists to improve on.
+    echo = shape(status="uncertain", disease="Undetermined pathology",
+                 disease_ar="ظهور مرض غير محدد", confidence=0.4)
+    check("the masking label is never echoed as a probable name",
+          echo["provisional_disease"] == "" and echo["provisional_disease_ar"] == "")
+    healthy_echo = shape(status="uncertain", disease="Healthy Plant",
+                         disease_ar="نبات سليم", confidence=0.4)
+    check("a healthy verdict is never echoed as a probable name",
+          healthy_echo["provisional_disease"] == ""
+          and healthy_echo["provisional_disease_ar"] == "")
+
+    ar_guess = norm(dict(base_report, status="uncertain", disease="Possible: Rust",
+                         disease_ar="الصدأ", confidence=0.4),
+                    mime="image/jpeg", model="m", elapsed_ms=1, filename=None,
+                    language="ar")
+    check("the arabic locale keeps the arabic probable name",
+          ar_guess["provisional_disease_ar"] == "الصدأ",
+          f"got {ar_guess['provisional_disease_ar']!r}")
+    check("the arabic locale masks the arabic name it replaces",
+          ar_guess["disease_ar"] == "ظهور مرض غير محدد")
+
     print("\n=== 4. AdvisorAgent local KB fallback ===")
     aa = AdvisorAgent(settings)
     diag = {"disease": "Early blight", "crop": "Tomato", "severity": "moderate", "healthy": False, "confidence": 0.8}

@@ -246,6 +246,103 @@ def main() -> int:
     print(f"       ({len(tier_a)} class-position tokens, {len(tier_b)} compounds, "
           f"{len(css_classes)} rules defined)")
 
+    # --- cross-layer contract --------------------------------------------
+    # Every field the renderer touches must exist in the payload the backend
+    # actually emits. This is the regression test for a whole class of bug: the
+    # UI reading a value the backend masks, blanks or renames, which renders a
+    # placeholder exactly where a farmer expected an answer.
+    print("\n--- cross-layer: the payload carries what the renderer reads ---")
+    from agents.config import get_settings
+    from agents.diagnostic_agent import DiagnosticAgent
+
+    norm = DiagnosticAgent(get_settings())._normalise
+    seed = {"crop": "Mango", "crop_ar": "مانجو", "species_confidence": 0.8,
+            "is_leaf_image": True, "image_quality": "usable", "meta": {},
+            "pathogen": "Colletotrichum gloeosporioides"}
+
+    def norm_payload(**kw):
+        return norm(dict(seed, **kw), mime="image/jpeg", model="m",
+                    elapsed_ms=1, filename=None, language="ar")
+
+    verdicts = {
+        "healthy": norm_payload(status="healthy", disease="Healthy Plant",
+                                disease_ar="نبات سليم", pathogen="None", confidence=0.95),
+        "diseased": norm_payload(status="diseased", disease="Anthracnose",
+                                 disease_ar="الأنثراكنوز", confidence=0.9,
+                                 severity="moderate", severity_pct=0.4),
+        "uncertain": norm_payload(status="uncertain", disease="Anthracnose",
+                                  disease_ar="الأنثراكنوز", confidence=0.55,
+                                  severity="low", severity_pct=0.2),
+    }
+    advisory_stub = {"title": "t", "title_ar": "ت", "region": "Tébessa", "kind": "k",
+                     "actions": [], "treatments": [], "prevention": [],
+                     "disclaimer": "d", "irrigation_schedule": {},
+                     "meta": {"source": "local_kb"}}
+    report_stub = {"diagnosis": verdicts["uncertain"], "status": "provisional",
+                   # Stamped by the SUPERVISOR (supervisor_agent.py), not by
+                   # _normalise — listed here so a missing key is not mistaken
+                   # for a field the diagnostic agent forgot to emit.
+                   "run_id": "0" * 32,
+                   "created_at": "2026-10-23T00:00:00+00:00",
+                   "confidence": {"overall": 0.55, "provisional": True},
+                   "timing": {"total_ms": 100}, "advisory": advisory_stub}
+
+    # Fields the renderer reads TOLERANTLY — behind `x.prop ? … : …`,
+    # `.filter(Boolean)` or `x.prop || …`. Their absence is a supported case,
+    # not a contract break; pinning them as required would make this check cry
+    # wolf and hide a real drift behind the noise.
+    optional = {"meta": {"fallback_reason"},
+                "irrig": {"schedule", "target", "note"}}
+
+    def unseen(refs, obj, opt=frozenset()):
+        return sorted({r for r in refs if r not in obj and r not in opt})
+
+    # Scoped to the renderer alone. `meta` is ALSO bound to a DOM element in
+    # auth.js (`els.meta.textContent`), so scanning every module would report a
+    # false break the instant an unrelated file touched an element of that name.
+    renderer = modules.get("diagnose.js", "")
+    i18n_src = modules.get("i18n.js", "")
+
+    diag_refs = set(re.findall(r"\bd\.(\w+)", renderer)) | \
+        set(re.findall(r"\bdiagnosis\.(\w+)", renderer))
+    report_refs = set(re.findall(r"\breport\.(\w+)", renderer))
+    advisory_refs = set(re.findall(r"\ba\.(\w+)", renderer))
+    meta_refs = set(re.findall(r"\bmeta\.(\w+)", renderer))
+    irrig_refs = set(re.findall(r"\birrig\.(\w+)", renderer))
+
+    check("renderer reads the provisional fields",
+          "provisional_disease" in renderer and "provisional_disease_ar" in renderer)
+    lost = sorted({r for r in diag_refs if not any(r in v for v in verdicts.values())})
+    check("every diagnosis field the renderer reads exists in the payload",
+          not lost, f"unbacked: {lost}")
+    lost = unseen(report_refs, report_stub)
+    check("every report field the renderer reads exists", not lost, f"unbacked: {lost}")
+    lost = unseen(advisory_refs, advisory_stub)
+    check("every advisory field the renderer reads exists", not lost, f"unbacked: {lost}")
+    lost = unseen(meta_refs, advisory_stub["meta"], optional["meta"])
+    check("every meta field the renderer reads exists", not lost, f"unbacked: {lost}")
+    lost = unseen(irrig_refs, advisory_stub["irrigation_schedule"], optional["irrig"])
+    check("every irrigation field the renderer reads exists", not lost, f"unbacked: {lost}")
+
+    # The specific behaviour behind the provisional badge: an undetermined
+    # verdict must still hand the UI a name to display, while the masked label
+    # stays masked and no lead leaks onto the other two verdicts.
+    check("an undetermined verdict still masks the disease name",
+          verdicts["uncertain"]["disease_ar"] == "ظهور مرض غير محدد")
+    check("an undetermined verdict exposes the model's lead separately",
+          bool(verdicts["uncertain"]["provisional_disease"])
+          and verdicts["uncertain"]["provisional_disease_ar"] == "الأنثراكنوز",
+          repr(verdicts["uncertain"]["provisional_disease_ar"]))
+    check("a healthy plant offers no lead to show",
+          verdicts["healthy"]["provisional_disease"] == ""
+          and verdicts["healthy"]["provisional_disease_ar"] == "")
+    check("a confirmed diagnosis offers no lead to show",
+          verdicts["diseased"]["provisional_disease"] == ""
+          and verdicts["diseased"]["provisional_disease_ar"] == "")
+    check("the probable badge is translated in both locales",
+          "badge_probable" in renderer and "تشخيص محتمل" in i18n_src
+          and "Probable diagnosis" in i18n_src)
+
     print(f"\n{'='*52}\nTOTAL: {PASS} passed, {FAIL} failed\n{'='*52}")
     return 1 if FAIL else 0
 

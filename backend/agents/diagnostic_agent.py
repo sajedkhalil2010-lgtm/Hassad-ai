@@ -60,6 +60,7 @@ _DIAGNOSTIC_JSON_SHAPE = """\
   "species_confidence": 0.0,
   "status": "healthy|diseased|uncertain",
   "condition_type": "Disease|Insect Damage|Environmental Stress|Nutrient Deficiency",
+  "matched_category": "Fungal Pathogen|Bacterial Pathogen|Viral & Viroid|Nematode & Root Parasite|Physiological & Abiotic|Insect & Structural Damage",
   "disease": "Early blight",
   "disease_ar": "اللفحة المبكرة",
   "pathogen": "Alternaria solani",
@@ -145,6 +146,25 @@ Then classify whatever you found into "condition_type" - exactly one of these:
     leaf and following the vein pattern rather than a lesion boundary.
 "condition_type" = "None" only when "status" = "healthy".
 
+When you can name a disease, also set "matched_category" to exactly one of:
+  - "Fungal Pathogen" -> mildews, rusts, smuts, scabs, blights, anthracnose,
+    rots, wilts, leaf spots, sooty mould
+  - "Bacterial Pathogen" -> cankers, fire blight, soft rots, bacterial wilt,
+    crown gall, angular leaf spot, vascular streaking (Xylella)
+  - "Viral & Viroid" -> mosaic, mottle, leafroll, yellow leaf curl,
+    ringspot, dwarfing, and viroids
+  - "Nematode & Root Parasite" -> root-knot, cyst, lesion and citrus
+    nematodes: root galls, stunting, patchy wilt, slow dieback
+  - "Physiological & Abiotic" -> nutrient deficiency or toxicity, tip burn,
+    blossom-end rot, gummosis, frost, sunscald, fruit splitting
+  - "Insect & Structural Damage" -> galls, miners, borers, chewing,
+    stippling, webbing
+Draw on the FULL breadth of plant pathology, not only the handful of crop
+diseases you see most often. This plant may be any species and any part, so a
+rare or regional condition belongs in exactly the same taxonomy as a common
+one - name it in the domain it belongs to rather than forcing it into a
+familiar category.
+
 STEP 3 - DESCRIBE AND EXPLAIN (whenever "status" is "diseased" or "uncertain").
 Ground the finding in what is actually visible in this image. The exact name
 may be rare, regional, or simply unknown to you - that is NOT a reason to
@@ -175,9 +195,10 @@ Distinguish between the patterns that separate the common look-alikes:
     stops abruptly; abiotic, so it does not advance from day to day
 State the primary symptoms you can see, list at least one plausible
 alternative in "differential", and give a concrete ordered treatment
-sequence in "recommendations". If the condition really is unknown, the steps
-must be cultural and low-risk - hygiene, water, nutrition, physical removal -
-rather than a specific product.
+sequence in "recommendations" - irrigation, nutrition and field hygiene count
+as treatment here, not only a spray. If the condition really is unknown, the
+steps must be cultural and low-risk - hygiene, water, nutrition, physical
+removal - rather than a specific product.
 
 CONFIDENCE RULE - apply it in step 2, not after.
 "confidence" is how sure you are of your FINAL "status". A disease may only be
@@ -201,6 +222,11 @@ Rules:
 - "condition_type" is EXACTLY "Disease", "Insect Damage", "Environmental
   Stress", "Nutrient Deficiency", or "None" when healthy. Fill it in every
   response including uncertain ones, where it names the CLASS you suspect.
+- "matched_category" is EXACTLY one of "Fungal Pathogen", "Bacterial
+  Pathogen", "Viral & Viroid", "Nematode & Root Parasite", "Physiological &
+  Abiotic", "Insect & Structural Damage", or "None" when healthy. It refines
+  "condition_type": a "Disease" class must pick the pathogen domain, and a
+  healthy plant is "None" in both fields.
 - No field is ever blank and no response is ever an "I don't know". An
   unusual or rare image is answered with a symptom description, a severity and
   ranked hypotheses — see STEP 3 — never with silence.
@@ -297,6 +323,40 @@ SPECIES_CONFIDENCE_FLOOR = 0.50
 _UNCERTAIN_LABEL_EN = "Undetermined pathology"
 _UNCERTAIN_LABEL_AR = "ظهور مرض غير محدد"
 
+#: The labels a confirmed-healthy plant is renamed to. Named once here because
+#: two places need them and they must agree: the healthy branch writes them,
+#: and :func:`_provisional_name` has to recognise them — otherwise the
+#: sanitizer would hand "نبات سليم" straight back as a probable disease, which
+#: is worse than the blank label it exists to improve on.
+_HEALTHY_LABEL_EN = "Healthy Plant"
+_HEALTHY_LABEL_AR = "نبات سليم"
+
+
+def _provisional_name(value: Any) -> str:
+    """Keep a hypothesis only when it actually names something.
+
+    The undetermined branch masks ``disease``/``disease_ar`` — that guardrail
+    is the point of the field — but a lead the model stood behind is still
+    worth more to a farmer than a blank label. So it is carried separately,
+    here sanitised against the three shapes that would be worse than silence:
+    nothing at all, a healthy verdict echoed back, and our own masking label.
+
+    Returns ``""`` for every rejected case rather than ``None``, so a client
+    can test presence with a plain truthiness check.
+    """
+    text = as_str(value, "").strip()
+    if not text:
+        return ""
+    if text.lower() in _HEALTHY_DISEASE_NAMES:
+        return ""
+    if text in {_HEALTHY_LABEL_EN, _HEALTHY_LABEL_AR}:
+        return ""
+    if text.lower() in {_UNCERTAIN_LABEL_EN.lower(), _UNCERTAIN_LABEL_AR.lower()}:
+        return ""
+    if text.lower() in {"unknown", "none", "-", "غير معروف", "غير محدد"}:
+        return ""
+    return text
+
 
 #: What an uncertain verdict actually needs: a better photo, not a spray
 #: schedule. Both languages are supplied locally so the KB fallback stays
@@ -339,7 +399,7 @@ CONDITION_TYPE_NONE = "None"
 
 _CONDITION_TYPES_ALL: tuple[str, ...] = (*CONDITION_TYPES, CONDITION_TYPE_NONE)
 
-#: Script twin of each class, so ``detailed_analysis`` reads as one sentence in
+#: Script twin of each class, so ``analysis_details`` reads as one sentence in
 #: either language instead of dropping an English taxonomy label mid-line.
 _CONDITION_TYPE_AR: dict[str, str] = {
     "Disease": "مرض",
@@ -393,6 +453,139 @@ _ENV_STEMS = (
     "scorch", "waterlog", "sunscald", "windburn", "tip burn", "tipburn",
     "overwater", "herbicid", "transplant shock",
 )
+
+
+# --------------------------------------------------- agronomic domains ---
+
+#: The agronomic domains a named disease must be sorted into.
+#:
+#: The brief named five. A sixth — ``Insect & Structural Damage`` — is added
+#: deliberately: galls and leaf miners were already classified as
+#: ``Insect Damage`` at the coarse level, and folding them into "Nematode &
+#: Root Parasite" (because *root* galls are nematode galls) or into the
+#: physiological bucket would tell a farmer that an insect is a nutrient
+#: problem. This field *refines* :data:`CONDITION_TYPES`; it does not replace
+#: it.
+MATCHED_CATEGORIES: tuple[str, ...] = (
+    "Fungal Pathogen",
+    "Bacterial Pathogen",
+    "Viral & Viroid",
+    "Nematode & Root Parasite",
+    "Physiological & Abiotic",
+    "Insect & Structural Damage",
+)
+
+#: Reported for a confirmed-healthy plant, mirroring
+#: :data:`CONDITION_TYPE_NONE` so the field is never blank on any response.
+MATCHED_CATEGORY_NONE = "None"
+
+#: Domain inference, most specific first. A pathogen genus identifies the
+#: domain whatever the symptom happens to look like — Alternaria is a fungus
+#: whether it produced blight or a leaf spot — so genus names outrank symptom
+#: words. Symptom words that occur in more than one domain (wilt, rot, canker,
+#: gall, blight) are deliberately absent: a confident wrong answer is worse
+#: than falling through to the documented fungal prior below.
+_DOMAIN_RULES: tuple[tuple[frozenset[str], str], ...] = (
+    (frozenset({
+        "alternaria", "fusarium", "botrytis", "phytophthora", "colletotrichum",
+        "erysiphe", "puccinia", "ustilago", "venturia", "septoria",
+        "cercospora", "podosphaera", "sclerotinia", "rhizoctonia",
+        "monilinia", "plasmopara", "peronospora", "oomycete",
+    }), "Fungal Pathogen"),
+    (frozenset({
+        "xanthomonas", "agrobacterium", "pseudomonas", "erwinia", "xylella",
+        "phytoplasma", "clavibacter", "ralstonia", "pantoea", "acidovorax",
+        "bacteria", "bacterial",
+    }), "Bacterial Pathogen"),
+    (frozenset({
+        "meloidogyne", "globodera", "heterodera", "pratylenchus",
+        "tylenchulus", "radopholus", "ditylenchus",
+    }), "Nematode & Root Parasite"),
+    (frozenset({
+        "virus", "viral", "viroid", "tmv", "cmv", "tylcv", "plrv", "tswv",
+        "mosaic", "mottle", "leafroll", "ringspot",
+    }), "Viral & Viroid"),
+    (frozenset({
+        "mildew", "powdery", "downy", "rust", "rusts", "smut", "smuts",
+        "scab", "scabs", "anthracnose", "mould", "mold", "mycelium",
+        "spores", "spore",
+    }), "Fungal Pathogen"),
+    (frozenset({
+        "nematode", "nematodes", "knot", "cyst",
+    }), "Nematode & Root Parasite"),
+)
+
+_JOIN_WORDS = frozenset({"and", "of", "the", "with"})
+
+
+def _category_words(text: str) -> frozenset[str]:
+    """Lower-cased word set for a category value, minus the joining words.
+
+    Lets ``"viral/viroid"`` and ``"Viral & Viroid"`` compare equal — the
+    punctuation is discarded and ``&`` carries no meaning — so a model that
+    renders the separator differently is still matched instead of silently
+    falling through to the prior.
+    """
+    words = "".join(c if c.isalpha() else " " for c in text.lower()).split()
+    return frozenset(w for w in words if w not in _JOIN_WORDS)
+
+
+_ALL_CATEGORY_KEYS: tuple[frozenset[str], ...] = tuple(
+    _category_words(c) for c in MATCHED_CATEGORIES
+)
+
+
+def _matched_category(
+    raw: Any,
+    *,
+    status: str,
+    condition_type: str,
+    texts: list[str],
+) -> str:
+    """Resolve the agronomic domain, without ever leaving the field blank.
+
+    Precedence, most reliable first:
+
+    1. A confirmed-healthy plant belongs to no domain.
+    2. The model's own value, when it is one of :data:`MATCHED_CATEGORIES`.
+    3. The coarse ``condition_type``, for the two non-pathogen domains. A
+       raised gall is bacterial (crown gall) or an insect's, and only the
+       coarse class has already made that call, so no symptom word may
+       overrule it.
+    4. Pathogen genus, then unambiguous symptom words, from the text.
+    5. ``Fungal Pathogen`` as an explicit prior for a disease with no other
+       signal — documented here rather than hidden, because ``status`` and
+       ``disease`` carry the actual claim and this is only metadata about
+       which domain it most likely belongs to.
+    """
+    if status == "healthy":
+        return MATCHED_CATEGORY_NONE
+
+    value = as_str(raw, "").strip()
+    if value:
+        want = _category_words(value)
+        for canonical in MATCHED_CATEGORIES:
+            if _category_words(canonical) == want:
+                return canonical
+        # Tolerate a gloss such as "Viral & Viroid Pathogen", where the
+        # canonical is a subset of what the model wrote. Longest first, so a
+        # longer domain never loses its own value to a shorter one.
+        for canonical in sorted(MATCHED_CATEGORIES, key=len, reverse=True):
+            if _ALL_CATEGORY_KEYS[MATCHED_CATEGORIES.index(canonical)] <= want:
+                return canonical
+
+    if condition_type == "Insect Damage":
+        return "Insect & Structural Damage"
+    if condition_type in {"Environmental Stress", "Nutrient Deficiency"}:
+        return "Physiological & Abiotic"
+
+    blob = " ".join(t for t in texts if t).lower()
+    tokens = {w for w in "".join(c if c.isalpha() else " " for c in blob).split()}
+    for token_set, canonical in _DOMAIN_RULES:
+        if tokens & token_set:
+            return canonical
+
+    return "Fungal Pathogen"
 
 
 def _condition_type(raw: Any, *, status: str, texts: list[str]) -> str:
@@ -535,7 +728,7 @@ def _fallback_analysis(
     symptoms: list[str],
     language: str,
 ) -> str:
-    """Compose ``detailed_analysis`` when the model left ``pathology`` empty.
+    """Compose ``analysis_details`` when the model left ``pathology`` empty.
 
     Guarantees the field is never blank — the request forbids returning nothing
     — without inventing a cause: the cause line names the pathogen only when the
@@ -756,13 +949,20 @@ class DiagnosticAgent:
         crop, which is strictly worse than asking them for a better photo.
 
         The response additionally carries the universal-engine contract —
-        ``detected_plant``, ``condition_type``, ``confidence_score``,
-        ``detailed_analysis`` and ``recommended_treatment``. Each is derived
-        from the same local that built its legacy counterpart rather than read
-        from the payload a second time, so the two views of one diagnosis
-        cannot drift apart. ``detailed_analysis`` is written locally for the
-        undetermined branch so that a guess never reaches the farmer as prose
-        in the voice of a confirmed diagnosis.
+        ``detected_plant``, ``condition_type``, ``matched_category``,
+        ``disease_name_en``, ``disease_name_ar``, ``confidence_score``,
+        ``analysis_details`` and ``treatment_plan``. Each is derived from the
+        same local that built its legacy counterpart rather than read from the
+        payload a second time, so the two views of one diagnosis cannot drift
+        apart. ``analysis_details`` is written locally for the undetermined
+        branch so that a guess never reaches the farmer as prose in the voice
+        of a confirmed diagnosis.
+
+        An undetermined verdict additionally carries ``provisional_disease``
+        and ``provisional_disease_ar`` — the name the model proposed, kept out
+        of ``disease``/``disease_ar`` so the masking guardrail is untouched.
+        Both are ``""`` on every other verdict, and a client that ignores them
+        sees exactly the response it saw before they existed.
         """
         report = as_dict(report)
         symptoms = as_str_list(report.get("symptoms"))
@@ -824,15 +1024,31 @@ class DiagnosticAgent:
             status=status,
             texts=[disease, pathology, as_str(report.get("pathogen"), ""), *symptoms],
         )
+        # The domain is resolved from the same snapshot of the model's own
+        # words, before the branches below overwrite them, and is seeded with
+        # `condition_type` so the coarse call it already made is honoured
+        # rather than second-guessed by a symptom word.
+        matched_category = _matched_category(
+            report.get("matched_category"),
+            status=status,
+            condition_type=condition_type,
+            texts=[disease, pathology, as_str(report.get("pathogen"), ""), *symptoms],
+        )
 
         healthy = status == "healthy"
         uncertain = status == "uncertain"
 
+        # Populated ONLY for an undetermined verdict, and blank everywhere
+        # else, so a client can key off presence alone without also having to
+        # re-derive `status`.
+        provisional = ""
+        provisional_ar = ""
+
         if healthy:
             # A confirmed-healthy leaf must read as one in both scripts, not
             # as "Healthy"/"الصحة" or whatever phrasing the model chose.
-            disease = "Healthy Plant"
-            disease_ar = "نبات سليم"
+            disease = _HEALTHY_LABEL_EN
+            disease_ar = _HEALTHY_LABEL_AR
             pathogen = "None"
             severity = "none"
             severity_pct = 0.0
@@ -846,6 +1062,15 @@ class DiagnosticAgent:
             disease = _UNCERTAIN_LABEL_EN
             disease_ar = _UNCERTAIN_LABEL_AR
             pathogen = as_str(report.get("pathogen"), "Unknown")
+            # The model's own hypothesis is preserved in a SEPARATE field
+            # rather than restored to `disease`, so the mask above can never
+            # be bypassed by accident. It carries no severity, no confident
+            # tone and no specific treatment — it is a lead, and presenting
+            # it as anything more than that is exactly what the floor exists
+            # to prevent. `report` is never mutated, so `differential` still
+            # holds the same guess behind its "Possible: " prefix.
+            provisional = _provisional_name(report.get("disease"))
+            provisional_ar = _provisional_name(report.get("disease_ar"))
             severity = "low"
             severity_pct = min(severity_pct, 0.25)
             # The re-photograph advice must stay FIRST: both the test suite and
@@ -867,7 +1092,7 @@ class DiagnosticAgent:
                     else _TREATMENT_FALLBACK_EN
                 )
 
-        # --- detailed_analysis: never blank, never a mislaid diagnosis ------
+        # --- analysis_details: never blank, never a mislaid diagnosis -------
         # Every response must carry one, so each branch falls back to composed
         # text when the model supplied none. For an undetermined verdict the
         # prose is written here rather than taken from the model, because the
@@ -875,7 +1100,7 @@ class DiagnosticAgent:
         # the farmer dressed as one.
         model_pathology = pathology.strip()
         if uncertain:
-            detailed_analysis = _uncertain_analysis(
+            analysis_details = _uncertain_analysis(
                 symptoms=symptoms,
                 hypotheses=differential,
                 condition_type=condition_type,
@@ -883,9 +1108,9 @@ class DiagnosticAgent:
                 language=language,
             )
         elif healthy:
-            detailed_analysis = model_pathology or _ANALYSIS_HEALTHY[language]
+            analysis_details = model_pathology or _ANALYSIS_HEALTHY[language]
         else:
-            detailed_analysis = model_pathology or _fallback_analysis(
+            analysis_details = model_pathology or _fallback_analysis(
                 disease=disease,
                 disease_ar=disease_ar,
                 pathogen=pathogen,
@@ -922,18 +1147,28 @@ class DiagnosticAgent:
             "low_confidence": uncertain or confidence < LOW_CONFIDENCE_THRESHOLD,
             "recommendations": recommendations,
             "differential": differential,
+            # A probable name for an undetermined verdict. Deliberately kept
+            # OUT of `disease`/`disease_ar`, which stay masked above: this is
+            # only the lead the model named, and a client that ignores these
+            # two keys sees exactly what it saw before they existed.
+            "provisional_disease": provisional,
+            "provisional_disease_ar": provisional_ar,
             "image_quality": quality,
             # --- universal-engine contract ---------------------------------
-            # All five are read straight from the same locals that built the
-            # legacy keys above, so the two views of one diagnosis cannot drift:
-            # there is no second place any of them could be written. `crop`,
-            # `confidence` and `recommendations` remain for the advisor, the
-            # chat context and the dashboard, which all read them today.
+            # Every key here is read straight from the same local that built
+            # the legacy keys above, so the two views of one diagnosis cannot
+            # drift: there is no second place any of them could be written.
+            # `crop`, `disease`, `confidence` and `recommendations` stay for
+            # the advisor, the chat context and the dashboard, which all read
+            # them today; the names below are the public contract.
             "detected_plant": crop,
             "condition_type": condition_type,
+            "matched_category": matched_category,
+            "disease_name_en": disease,
+            "disease_name_ar": disease_ar,
             "confidence_score": confidence,
-            "detailed_analysis": detailed_analysis,
-            "recommended_treatment": recommendations,
+            "analysis_details": analysis_details,
+            "treatment_plan": recommendations,
             "meta": {
                 "agent": self.name,
                 "model": model,
@@ -953,4 +1188,6 @@ __all__ = [
     "SPECIES_CONFIDENCE_FLOOR",
     "CONDITION_TYPES",
     "CONDITION_TYPE_NONE",
+    "MATCHED_CATEGORIES",
+    "MATCHED_CATEGORY_NONE",
 ]
