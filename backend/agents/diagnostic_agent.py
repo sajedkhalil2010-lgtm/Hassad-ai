@@ -59,6 +59,7 @@ _DIAGNOSTIC_JSON_SHAPE = """\
   "crop_ar": "طماطم",
   "species_confidence": 0.0,
   "status": "healthy|diseased|uncertain",
+  "condition_type": "Disease|Insect Damage|Environmental Stress|Nutrient Deficiency",
   "disease": "Early blight",
   "disease_ar": "اللفحة المبكرة",
   "pathogen": "Alternaria solani",
@@ -77,14 +78,24 @@ _DIAGNOSTIC_JSON_SHAPE = """\
 #: by :func:`_build_prompt`, because the JSON braces below make this
 #: unusable as a Python f-string without doubling every one of them.
 _PROMPT_TEMPLATE = """\
-You are a plant-pathologist AI examining ONE crop-leaf photograph.
+You are an expert botanist and plant pathologist examining ONE photograph of
+a plant. Any species, and any part: leaf, stem, bark, fruit, root or a whole
+plant. Crop or wild, food plant or ornamental, tree, shrub, grass, houseplant
+or succulent - identify what is actually in front of you.
 
 Work in THREE steps, in this order.
 
 STEP 1 - IDENTIFY THE PLANT (this gates everything else).
 Name the plant species you actually see in "crop" (and its script twin in
 "crop_ar"), and record how sure you are in "species_confidence" (float 0-1).
-Judge from leaf shape, margin, venation, arrangement and surface texture.
+Judge from leaf shape, margin, venation, arrangement and surface texture -
+and from bark, fruit, flower, thorns, seed pods or growth habit when the
+framed plant part allows it. When the exact species is beyond reach, name the
+GENUS or FAMILY instead and say which you gave: Citrus, Eucalyptus, Brassica,
+Solanaceae, Poaceae, Fabaceae, Asteraceae, Lamiaceae, Liliaceae, a fern, a
+cactus, a palm, an ornamental, a houseplant. A correct family is far more
+useful than a confident wrong species, and family-level identification is
+enough to reason about what actually attacks that family.
   - Do NOT assume the plant is a crop you were told about, and NEVER assume
     it is tomato. Lavender, sage, olive, mint, basil, rose, cactus and most
     ornamentals are not tomato, and a leaf that is not a Solanaceous crop
@@ -118,10 +129,31 @@ Do NOT invent a disease in order to be helpful. A wrong disease name sends a
 farmer to spray something their healthy crop did not need. Reporting "healthy"
 or "uncertain" when you are not sure is the CORRECT answer, not a failure.
 
-STEP 3 - IDENTIFY (only when "status" is "diseased").
-Name the single most likely condition and ground it in what is actually
-visible in this image. Distinguish between the patterns that separate the
-common look-alikes:
+Then classify whatever you found into "condition_type" - exactly one of these:
+  - "Disease" -> fungal, bacterial or viral attack: lesions with defined
+    borders, spreading necrosis, rusts, mildews, rots, cankers, blights.
+  - "Insect Damage" -> animals feeding on or in the plant: galls, bumps,
+    blisters and swellings, mines and tunnels under the epidermis, chewed
+    margins, webbing, stippling, frass. A structural deformation of the
+    tissue is INSECT DAMAGE until proven otherwise, not a fungus.
+  - "Environmental Stress" -> abiotic injury with no organism present: tip
+    burn, leaf scorch, sunscald, windburn, frost, drought, waterlogging,
+    salt or herbicide damage. It tends to stop at the same place on every
+    leaf and has no advancing edge.
+  - "Nutrient Deficiency" -> interveinal chlorosis, marginal scorch, uniform
+    yellowing, purpling or blossom-end rot, typically SYMMETRICAL across the
+    leaf and following the vein pattern rather than a lesion boundary.
+"condition_type" = "None" only when "status" = "healthy".
+
+STEP 3 - DESCRIBE AND EXPLAIN (whenever "status" is "diseased" or "uncertain").
+Ground the finding in what is actually visible in this image. The exact name
+may be rare, regional, or simply unknown to you - that is NOT a reason to
+return nothing. An empty answer helps nobody, so never leave a field blank and
+never emit an "I don't know" state. When you cannot name the condition with
+confidence, describe the symptom type, the severity, and the most likely
+biological or environmental cause instead, hold "status" at "uncertain", and
+rank your hypotheses in "differential" from most to least likely.
+Distinguish between the patterns that separate the common look-alikes:
   - rust -> raised orange-brown pustules, often ringed by chlorosis
   - blight -> expanding necrotic lesions; early blight shows concentric
     "target-board" rings, late blight shows water-soaked dark patches with
@@ -129,13 +161,23 @@ common look-alikes:
   - powdery / downy mildew -> discrete white-grey COLONIES growing on the
     surface, powdery spreading between veins, downy angular and confined by
     veins. An evenly fuzzy or silvery leaf is NOT mildew.
+  - galls and blisters -> raised bumps where the tissue has been reprogrammed
+    by a mite, wasp, midge or bacterium; count them and note any exit hole on
+    the underside, and never report them as a leaf spot
+  - leaf miners -> pale wandering trails, blotches or serpentine lines INSIDE
+    the leaf, best seen against the light, with the tissue around them still
+    intact - an insect, not a deficiency
   - pest damage -> chewing, mines, stippling, or frass; say so rather than
     calling it a fungus
   - nutrient deficiency -> a symmetric pattern (interveinal chlorosis,
     marginal scorch, uniform yellowing) with no expanding lesion edge
+  - tip burn and scorch -> browning that begins at the tip or margin and
+    stops abruptly; abiotic, so it does not advance from day to day
 State the primary symptoms you can see, list at least one plausible
 alternative in "differential", and give a concrete ordered treatment
-sequence in "recommendations".
+sequence in "recommendations". If the condition really is unknown, the steps
+must be cultural and low-risk - hygiene, water, nutrition, physical removal -
+rather than a specific product.
 
 CONFIDENCE RULE - apply it in step 2, not after.
 "confidence" is how sure you are of your FINAL "status". A disease may only be
@@ -153,15 +195,24 @@ __LANGUAGE__
 Rules:
 - "status" is EXACTLY "healthy", "diseased" or "uncertain" — no other value,
   no blanks. Default to "uncertain" rather than guessing.
-- "status" = "healthy" only when you have positively confirmed a healthy
-  leaf, and never as a way of being polite about a poor photo - a poor photo
+- "status" = "healthy" only when you have positively confirmed healthy
+  tissue, and never as a way of being polite about a poor photo - a poor photo
   is "uncertain".
+- "condition_type" is EXACTLY "Disease", "Insect Damage", "Environmental
+  Stress", "Nutrient Deficiency", or "None" when healthy. Fill it in every
+  response including uncertain ones, where it names the CLASS you suspect.
+- No field is ever blank and no response is ever an "I don't know". An
+  unusual or rare image is answered with a symptom description, a severity and
+  ranked hypotheses — see STEP 3 — never with silence.
 - "confidence" and "severity_pct" and "species_confidence" are floats in [0,1].
-- Be honest: if the image is blurry, over-exposed or not a leaf, lower
+- Be honest: if the image is blurry, over-exposed or not a plant part, lower
   "confidence" and say so in "confidence_basis"; still fill every field.
 - "crop" and "disease" are ALWAYS in English and "crop_ar" and "disease_ar"
   are ALWAYS natural Arabic — all four, in every response, whichever language
   you are writing the rest in.
+- "pathology" is the full explanation the farmer reads: the symptom type, the
+  severity, and the most likely biological or environmental cause — including
+  when the condition itself is uncertain or left unnamed.
 - "pathology", "symptoms", "confidence_basis", "differential" and
   "recommendations" must be written in __LANG_NAME__, because that is the
   language the farmer is reading.
@@ -264,6 +315,244 @@ _UNCERTAIN_TIPS: dict[str, list[str]] = {
         "افحص باقي النبات الآن وأعد التحليل إذا انتشرت الأعراض.",
     ],
 }
+
+
+# --------------------------------------------------------------- taxonomy ---
+
+#: The pathological classes every finding is sorted into. The prompt asks the
+#: model for ``condition_type`` directly, but a field *requested* of a model is
+#: not a guarantee either, so :func:`_condition_type` re-derives it whenever the
+#: model omits or mangles the value. Four classes plus ``None`` for a confirmed
+#: healthy plant: a healthy plant belongs to none of them, and defaulting it to
+#: ``Disease`` would reintroduce exactly the false positive the floors below
+#: exist to stop.
+CONDITION_TYPES: tuple[str, ...] = (
+    "Disease",
+    "Insect Damage",
+    "Environmental Stress",
+    "Nutrient Deficiency",
+)
+
+#: What a healthy plant reports as. Deliberately a member of the vocabulary
+#: rather than an empty string, so the field is never blank on any response.
+CONDITION_TYPE_NONE = "None"
+
+_CONDITION_TYPES_ALL: tuple[str, ...] = (*CONDITION_TYPES, CONDITION_TYPE_NONE)
+
+#: Script twin of each class, so ``detailed_analysis`` reads as one sentence in
+#: either language instead of dropping an English taxonomy label mid-line.
+_CONDITION_TYPE_AR: dict[str, str] = {
+    "Disease": "مرض",
+    "Insect Damage": "أذى حشري",
+    "Environmental Stress": "إجهاد بيئي",
+    "Nutrient Deficiency": "نقص غذائي",
+    "None": "لا يوجد",
+}
+
+_SEVERITY_AR: dict[str, str] = {
+    "none": "منعدمة",
+    "low": "منخفضة",
+    "moderate": "متوسطة",
+    "high": "عالية",
+    "critical": "حرجة",
+}
+
+#: Evidence that identifies a class when the model did not supply a usable one.
+#: Matching is by whole token first and only then by stem, because a plain
+#: substring test on the shortest word here — "mine" — also matches "mineral",
+#: which would file a nutrient deficiency under insect damage.
+#:
+#: Order is load-bearing: insect evidence is by far the most distinctive, and a
+#: "deficiency" reading must beat an environmental one because the two overlap
+#: in practice — waterlogging also yellows a leaf, but only the deficiency
+#: reading tells the farmer to check fertiliser and pH.
+_INSECT_TOKENS = frozenset({
+    "gall", "galls", "galled", "galling", "mine", "mines", "mined", "mining",
+    "miner", "miners", "mite", "mites", "aphid", "aphids", "thrip", "thrips",
+    "insect", "insects", "pest", "pests", "borer", "borers", "larva",
+    "larvae", "grub", "grubs", "whitefly", "whiteflies", "caterpillar",
+    "caterpillars", "scale", "scales", "webbing", "stippling", "frass",
+    "chew", "chewed", "chewing", "snail", "snails", "blister", "blisters",
+})
+_INSECT_STEMS = ("gall", "tunnel", "frass", "stippl", "webbing")
+
+_NUTRIENT_TOKENS = frozenset({
+    "deficiency", "deficient", "nutrient", "nutrients", "interveinal",
+    "chlorosis", "chlorotic", "nitrogen", "magnesium", "potassium",
+    "phosphorus", "phosphor", "iron", "zinc", "calcium", "manganese",
+    "fertiliser", "fertilizer", "fertilising", "fertilizing",
+})
+_NUTRIENT_STEMS = ("deficien", "interveinal", "chlorot", "fertilis", "fertiliz")
+
+_ENV_TOKENS = frozenset({
+    "scorch", "scorched", "scorching", "sunscald", "sunburn", "drought",
+    "frost", "waterlogged", "waterlogging", "herbicide", "windburn",
+    "oedema", "edema", "salinity", "overwatered",
+})
+_ENV_STEMS = (
+    "scorch", "waterlog", "sunscald", "windburn", "tip burn", "tipburn",
+    "overwater", "herbicid", "transplant shock",
+)
+
+
+def _condition_type(raw: Any, *, status: str, texts: list[str]) -> str:
+    """Coerce whatever the model sent into one of :data:`CONDITION_TYPES`.
+
+    A healthy plant short-circuits to ``None`` before any other reading: no
+    amount of suggestive wording in the payload may classify confirmed-healthy
+    tissue as a disease class. Otherwise the value is matched exactly first
+    (so a stray gloss cannot win), then as a substring ordered longest-first
+    (so ``"Insect Damage (galls)"`` resolves to insect damage and never to
+    ``Disease`` just because the word "damage" was parsed loosely), and only
+    then by the keyword stems above.
+    """
+    if status == "healthy":
+        return CONDITION_TYPE_NONE
+
+    value = as_str(raw, "").strip().lower().replace("_", " ").replace("-", " ")
+    if value:
+        for canonical in CONDITION_TYPES:
+            if value == canonical.lower():
+                return canonical
+        for canonical in sorted(CONDITION_TYPES, key=len, reverse=True):
+            if canonical.lower() in value:
+                return canonical
+
+    blob = " ".join(t for t in texts if t).lower()
+    # Tokens are whole words stripped of punctuation, so "mine" matches the
+    # leaf-mining symptom but cannot swallow "mineral".
+    tokens = {w for w in "".join(c if c.isalpha() else " " for c in blob).split()}
+    for token_set, stems, canonical in (
+        (_INSECT_TOKENS, _INSECT_STEMS, "Insect Damage"),
+        (_NUTRIENT_TOKENS, _NUTRIENT_STEMS, "Nutrient Deficiency"),
+        (_ENV_TOKENS, _ENV_STEMS, "Environmental Stress"),
+    ):
+        if tokens & token_set or any(stem in blob for stem in stems):
+            return canonical
+    return "Disease"
+
+
+#: Low-risk, non-chemical actions offered *alongside* an undetermined verdict.
+#:
+#: The guardrail exists so a farmer never sprays a healthy crop — not so an
+#: uncertain verdict leaves them standing in the field with nothing to do.
+#: Hygiene, physical removal and cultural correction are safe under every
+#: hypothesis in the differential, which is what makes them safe to say when we
+#: do not know which hypothesis is right. The chemical answer stays withheld:
+#: "do not spray yet" remains the first thing an uncertain verdict tells them.
+_CULTURAL_REMEDY: dict[str, dict[str, list[str]]] = {
+    "en": {
+        "Disease": [
+            "Meanwhile: bag and bin heavily affected tissue, disinfect tools between plants, and keep foliage dry to slow any spread.",
+        ],
+        "Insect Damage": [
+            "Meanwhile: prune out galled or mined shoots and destroy them, and inspect leaf undersides for eggs and young.",
+        ],
+        "Environmental Stress": [
+            "Meanwhile: correct the cause first - water deeply but less often, shield from midday sun and wind, and pause fertiliser until growth recovers.",
+        ],
+        "Nutrient Deficiency": [
+            "Meanwhile: apply a balanced fertiliser, and check drainage and soil pH before adding anything more.",
+        ],
+        "None": [
+            "Meanwhile: keep scouting weekly and maintain balanced feeding and irrigation hygiene.",
+        ],
+    },
+    "ar": {
+        "Disease": [
+            "في هذه الأثناء: أتلف الأوراق والأجزاء المصابة بشدة، ونظّف أدوات القص بين النباتات، وأبقِ الأوراق جافة لمنع الانتشار.",
+        ],
+        "Insect Damage": [
+            "في هذه الأثناء: اقطع الأجزاء التي تظهر عليها نقوش أو تورّمات وأتلفها، وافحص ظهر الأوراق بحثًا عن البيض والحشرات الصغيرة.",
+        ],
+        "Environmental Stress": [
+            "في هذه الأثناء: عالج السبب أولًا — ارِ بعمق وأقل تكرارًا، واحمِ النبات من شمس الظهيرة والرياح، وأوقف التسميد حتى يستعيد نموه.",
+        ],
+        "Nutrient Deficiency": [
+            "في هذه الأثناء: أضف سمادًا متوازنًا، وافحص تصريف التربة ودرجة حموضتها قبل إضافة أي شيء آخر.",
+        ],
+        "None": [
+            "في هذه الأثناء: واصِف الفحص أسبوعيًا وحافظ على تسميد متوازن ونظافة الري.",
+        ],
+    },
+}
+
+#: Fixed prose for a confirmed-healthy plant, used when the model supplied no
+#: explanation of its own. Bilingual by construction, exactly like the care
+#: tips above, so the offline path stays usable in both locales.
+_ANALYSIS_HEALTHY: dict[str, str] = {
+    "en": (
+        "No pathological symptoms detected. The colour, texture and surface "
+        "features observed are within normal variation for this plant, "
+        "including any natural hairs or waxy bloom."
+    ),
+    "ar": (
+        "لم تُرصد أي أعراض مرضية؛ فاللون والملمس وخصائص السطح الملاحظة تدخل "
+        "في التباين الطبيعي لهذا النبات، بما فيها الأهداب الطبيعية أو طبقة الشمع."
+    ),
+}
+
+
+def _uncertain_analysis(
+    *,
+    symptoms: list[str],
+    hypotheses: list[str],
+    condition_type: str,
+    confidence: float,
+    language: str,
+) -> str:
+    """Build the honest description for an undetermined verdict.
+
+    Written here rather than taken from the model on purpose: the model's
+    ``pathology`` prose is written as a diagnosis, and an uncertain verdict must
+    not read as one when it lands on the farmer's screen. This keeps the
+    symptom type, the severity, the classification and the ranked hypotheses —
+    everything the request asks for — while stating plainly that no condition
+    was confirmed.
+    """
+    seen = ", ".join(symptoms) if symptoms else "visible abnormality"
+    ranked = " | ".join(hypotheses) if hypotheses else "not yet determined"
+    if language == "ar":
+        return (
+            f"الأعراض المرصودة: {seen}. لا تؤكد الصورة حالة واحدة، لذا لم يُسمَّ "
+            f"مرض هنا. التصنيف: {_CONDITION_TYPE_AR.get(condition_type, condition_type)}. "
+            f"أكثر الفرضيات ترجيحًا: {ranked}. مستوى الثقة: {round(confidence * 100)}٪."
+        )
+    return (
+        f"Observed symptoms: {seen}. The photograph does not confirm a single "
+        f"condition, so no disease is named here. Classification: {condition_type}. "
+        f"Most likely explanations: {ranked}. Confidence: {round(confidence * 100)}%."
+    )
+
+
+def _fallback_analysis(
+    *,
+    disease: str,
+    disease_ar: str,
+    pathogen: str,
+    condition_type: str,
+    severity: str,
+    symptoms: list[str],
+    language: str,
+) -> str:
+    """Compose ``detailed_analysis`` when the model left ``pathology`` empty.
+
+    Guarantees the field is never blank — the request forbids returning nothing
+    — without inventing a cause: the cause line names the pathogen only when the
+    model actually supplied one, and otherwise falls back to the class.
+    """
+    seen = ", ".join(symptoms) if symptoms else "not itemised"
+    cause = pathogen if pathogen and pathogen.lower() not in {"unknown", "none"} else condition_type
+    if language == "ar":
+        return (
+            f"{disease_ar}. التصنيف: {_CONDITION_TYPE_AR.get(condition_type, condition_type)}. "
+            f"الشدة: {_SEVERITY_AR.get(severity, severity)}. الأعراض المرصودة: {seen}. "
+            f"السبب الأكثر ترجيحًا: {cause}."
+        )
+    return (
+        f"{disease}. Classification: {condition_type}. Severity: {severity}. "
+        f"Observed symptoms: {seen}. Most likely cause: {cause}."
+    )
 
 
 class DiagnosticAgent:
@@ -465,11 +754,21 @@ class DiagnosticAgent:
         never the reverse. The reasons are all in the block below; they exist
         because the cost of a false "diseased" is a farmer spraying a healthy
         crop, which is strictly worse than asking them for a better photo.
+
+        The response additionally carries the universal-engine contract —
+        ``detected_plant``, ``condition_type``, ``confidence_score``,
+        ``detailed_analysis`` and ``recommended_treatment``. Each is derived
+        from the same local that built its legacy counterpart rather than read
+        from the payload a second time, so the two views of one diagnosis
+        cannot drift apart. ``detailed_analysis`` is written locally for the
+        undetermined branch so that a guess never reaches the farmer as prose
+        in the voice of a confirmed diagnosis.
         """
         report = as_dict(report)
         symptoms = as_str_list(report.get("symptoms"))
         differential = as_str_list(report.get("differential"))
         recommendations = as_str_list(report.get("recommendations"))
+        pathology = as_str(report.get("pathology"), "")
 
         confidence = clamp01(report.get("confidence"), 0.0)
         severity_pct = clamp01(report.get("severity_pct"), 0.0)
@@ -515,6 +814,17 @@ class DiagnosticAgent:
                     d for d in differential if d.lower() != guess.lower()
                 ]
 
+        # --- the pathological class ----------------------------------------
+        # Computed here, while `disease`, `pathology` and `symptoms` still hold
+        # the model's own words and `status` already holds its final value. The
+        # branches below overwrite all three, so inferring the class after them
+        # would be inferring from the labels we ourselves substituted.
+        condition_type = _condition_type(
+            report.get("condition_type"),
+            status=status,
+            texts=[disease, pathology, as_str(report.get("pathogen"), ""), *symptoms],
+        )
+
         healthy = status == "healthy"
         uncertain = status == "uncertain"
 
@@ -538,7 +848,15 @@ class DiagnosticAgent:
             pathogen = as_str(report.get("pathogen"), "Unknown")
             severity = "low"
             severity_pct = min(severity_pct, 0.25)
-            recommendations = _UNCERTAIN_TIPS[language]
+            # The re-photograph advice must stay FIRST: both the test suite and
+            # the guardrail itself depend on an undetermined verdict opening
+            # with "get a better photo" rather than with a treatment. The
+            # cultural actions are appended, not prepended, because a hypothesis
+            # the farmer can safely act on is not the same thing as a diagnosis.
+            by_class = _CULTURAL_REMEDY.get(language, _CULTURAL_REMEDY["en"])
+            recommendations = _UNCERTAIN_TIPS[language] + (
+                by_class.get(condition_type) or by_class[CONDITION_TYPE_NONE]
+            )
         else:
             disease_ar = as_str(report.get("disease_ar"), "غير معروف")
             pathogen = as_str(report.get("pathogen"), "Unknown")
@@ -548,6 +866,34 @@ class DiagnosticAgent:
                     if language == "ar"
                     else _TREATMENT_FALLBACK_EN
                 )
+
+        # --- detailed_analysis: never blank, never a mislaid diagnosis ------
+        # Every response must carry one, so each branch falls back to composed
+        # text when the model supplied none. For an undetermined verdict the
+        # prose is written here rather than taken from the model, because the
+        # model writes `pathology` as a diagnosis and a guess must not reach
+        # the farmer dressed as one.
+        model_pathology = pathology.strip()
+        if uncertain:
+            detailed_analysis = _uncertain_analysis(
+                symptoms=symptoms,
+                hypotheses=differential,
+                condition_type=condition_type,
+                confidence=confidence,
+                language=language,
+            )
+        elif healthy:
+            detailed_analysis = model_pathology or _ANALYSIS_HEALTHY[language]
+        else:
+            detailed_analysis = model_pathology or _fallback_analysis(
+                disease=disease,
+                disease_ar=disease_ar,
+                pathogen=pathogen,
+                condition_type=condition_type,
+                severity=severity,
+                symptoms=symptoms,
+                language=language,
+            )
 
         quality = as_str(report.get("image_quality"), "usable").lower()
         if quality not in {"good", "usable", "poor"}:
@@ -564,7 +910,7 @@ class DiagnosticAgent:
             "disease": disease,
             "disease_ar": disease_ar,
             "pathogen": pathogen,
-            "pathology": as_str(report.get("pathology"), ""),
+            "pathology": pathology,
             "symptoms": symptoms,
             "severity": severity,
             "severity_pct": severity_pct,
@@ -577,6 +923,17 @@ class DiagnosticAgent:
             "recommendations": recommendations,
             "differential": differential,
             "image_quality": quality,
+            # --- universal-engine contract ---------------------------------
+            # All five are read straight from the same locals that built the
+            # legacy keys above, so the two views of one diagnosis cannot drift:
+            # there is no second place any of them could be written. `crop`,
+            # `confidence` and `recommendations` remain for the advisor, the
+            # chat context and the dashboard, which all read them today.
+            "detected_plant": crop,
+            "condition_type": condition_type,
+            "confidence_score": confidence,
+            "detailed_analysis": detailed_analysis,
+            "recommended_treatment": recommendations,
             "meta": {
                 "agent": self.name,
                 "model": model,
@@ -594,4 +951,6 @@ __all__ = [
     "LOW_CONFIDENCE_THRESHOLD",
     "CONFIDENCE_FLOOR",
     "SPECIES_CONFIDENCE_FLOOR",
+    "CONDITION_TYPES",
+    "CONDITION_TYPE_NONE",
 ]
