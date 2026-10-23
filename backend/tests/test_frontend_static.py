@@ -183,8 +183,8 @@ def main() -> int:
     # would just push code to look it up for no reason.
     WIRABLE = {
         "file", "dropzone", "preview", "clear-image", "analyze", "status",
-        "results", "summary", "symptoms", "advisory-body", "diagnosis",
-        "advisory", "supervisor", "messages", "chat-form", "chat-input",
+        "results", "summary", "symptoms", "advisory-body",
+        "messages", "chat-form", "chat-input",
         "chat-send", "suggestions", "chat-reset", "chat-empty",
         "auth-modal", "auth-email", "auth-password", "tab-login",
         "tab-register", "auth-submit", "auth-signed-out", "auth-signed-in",

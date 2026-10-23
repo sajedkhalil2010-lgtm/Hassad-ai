@@ -61,9 +61,6 @@ def main() -> int:
     html = r.text
     check("has file input", 'type="file"' in html)
     check("has Analyze button", ">Analyze<" in html)
-    check("has diagnosis container", 'id="diagnosis"' in html)
-    check("has advisory container", 'id="advisory"' in html)
-    check("has supervisor container", 'id="supervisor"' in html)
     check("declares utf-8 charset meta", '<meta charset="utf-8">' in html)
     check("links the stylesheet", "/assets/css/styles.css" in html)
     check("links the script", "/assets/js/app.js" in html)
@@ -80,12 +77,14 @@ def main() -> int:
     check("has results grid", 'id="summary"' in html)
     check("has symptoms list", 'id="symptoms"' in html)
     check("has guidance container", 'id="advisory-body"' in html)
-    # The <details>/<summary> STRUCTURE is what matters, not the label: the
-    # summary text is translated at runtime, so asserting the English literal
-    # would test the wrong thing the moment the language flips.
-    check("raw payloads are behind a disclosure",
-          "<details" in html and "<summary" in html
-          and 'id="diagnosis"' in html.split("<details", 1)[-1])
+    # The debug raw-response disclosure was removed: a farmer reading the
+    # structured grid gains nothing from a JSON dump of the same payload, and
+    # it pushed the guidance card up out of view. Asserting its ABSENCE stops
+    # the debug furniture coming back unnoticed.
+    check("debug raw-response viewer is gone",
+          'id="diagnosis"' not in html and 'id="supervisor"' not in html
+          and "الردود الخام" not in html)
+    check("no dead disclosure shell left behind", "<details" not in html)
 
     print("\n=== Assistant panel ===")
     check("has message log", 'id="messages"' in html)

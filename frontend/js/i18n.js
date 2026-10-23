@@ -61,7 +61,7 @@ const STRINGS = {
     drop_t: "أسقط صورة الورقة هنا", drop_or: "أو", drop_browse: "تصفّح ملفاتك",
     analyze: "تحليل", r_conf: "الثقة", r_sev: "تأثر الورقة",
     card_symptoms: "الأعراض المرصودة", card_guidance: "التوصيات الزراعية",
-    raw: "الردود الخام", history_hint: "محفوظ في متصفحك فقط — لا يُرسل إلى أي خادم.",
+    history_hint: "محفوظ في متصفحك فقط — لا يُرسل إلى أي خادم.",
     clear: "مسح", history_empty: "لا توجد تشخيصات بعد. ابدأ من استوديو التشخيص.",
 
     chat_t: "المساعد الزراعي", chat_status: "متصل بقاعدة المعرفة الزراعية",
@@ -129,7 +129,7 @@ const STRINGS = {
     drop_t: "Drop a leaf photo here", drop_or: "or", drop_browse: "browse your files",
     analyze: "Analyze", r_conf: "Confidence", r_sev: "Leaf affected",
     card_symptoms: "Observed symptoms", card_guidance: "Agronomic guidance",
-    raw: "Raw responses", history_hint: "Stored in your browser only — never sent to a server.",
+    history_hint: "Stored in your browser only — never sent to a server.",
     clear: "Clear", history_empty: "No diagnoses yet. Start from the Diagnostic Studio.",
 
     chat_t: "Agri Assistant", chat_status: "Connected to the agronomy knowledge base",

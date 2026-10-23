@@ -1,9 +1,9 @@
 /* =========================================================================
    Diagnostic workspace — drag-and-drop, local preview, and the results grid.
 
-   The structured grid is the product here; the raw diagnostic / advisory /
-   supervisor payloads stay one disclosure away for anyone who needs to see
-   exactly what the backend returned.
+   The structured grid is the product here: verdict, symptoms and the
+   advisory plan. There is deliberately no raw-payload view — a farmer
+   reading this screen gains nothing from a JSON dump of the same data.
 
    Exposes initDiagnose({onResult}) so the assistant panel can answer in the
    context of the plant that was actually analysed, rather than generically.
@@ -45,9 +45,6 @@ export function initDiagnose({ onResult } = {}) {
     verdictAr: $("verdict-ar"),
     symptoms: $("symptoms"),
     advisoryBody: $("advisory-body"),
-    diagnosis: $("diagnosis"),
-    advisory: $("advisory"),
-    supervisor: $("supervisor"),
   };
 
   /** @type {File|null} */
@@ -306,19 +303,10 @@ export function initDiagnose({ onResult } = {}) {
     }
   }
 
-  function renderRaw(report) {
-    // Pretty-printed for humans; the grid above is the authoritative view.
-    const json = (value) => JSON.stringify(value ?? {}, null, 2);
-    els.diagnosis.textContent = json(report.diagnosis);
-    els.advisory.textContent = json(report.advisory);
-    els.supervisor.textContent = JSON.stringify(report, null, 2);
-  }
-
   function render(report) {
     renderVerdict(report);
     renderSymptoms(report.diagnosis || {});
     renderGuidance(report);
-    renderRaw(report);
     show(els.results, true);
   }
 
