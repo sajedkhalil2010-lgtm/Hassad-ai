@@ -32,7 +32,6 @@ PLACEHOLDER_MARKERS = (
     "your_real_key",
     "your_groq_api_key",
     "your_key_here",
-    "your_single_gemini_api_key_here",
     "replace_me",
     "changeme",
     "example",

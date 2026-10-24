@@ -43,6 +43,9 @@ from .language import (
     normalise_language,
     reply_instruction,
 )
+from .pathology_taxonomy import domain_for as taxonomy_domain_for
+from .pathology_taxonomy import is_known as taxonomy_knows
+from .pathology_taxonomy import normalize as normalize_condition
 
 #: Structured-output contract handed to the model. Keeping it inline (rather
 #: than a remote schema) makes the shape auditable and stable. The keys the
@@ -358,6 +361,51 @@ def _provisional_name(value: Any) -> str:
     return text
 
 
+#: Shapes a model emits when it has NOT actually identified anything. A
+#: "diseased" verdict carrying one of these names nothing, so flagging it as a
+#: discovery would tell an operator to review a condition nobody claimed.
+#: Normalised at build time so the comparison uses the same folding as lookup.
+_UNNAMED_CONDITIONS = frozenset(
+    normalize_condition(value)
+    for value in (
+        "unknown", "unnamed", "unidentified", "not determined",
+        "undetermined", "undetermined pathology", "none", "n a", "na",
+        "uncertain", "not determined pathology", "healthy plant",
+        "غير معروف", "غير محدد", "ظهور مرض غير محدد", "نبات سليم",
+    )
+)
+
+
+def _is_novel_discovery(status: str, disease: Any, disease_ar: Any) -> bool:
+    """True when a confident verdict names something the index does not hold.
+
+    This is the open-ended discovery channel: the model may name anything it
+    actually sees, and the 610-condition reference index is a floor rather
+    than a ceiling over it. A name outside the index is flagged so the
+    taxonomy can grow from real observations instead of from a fixed list.
+
+    Deliberately conservative, because a false "novel" wastes a reviewer's
+    time and a false "known" hides a real one:
+
+    * Only a ``diseased`` verdict counts. An ``uncertain`` one has already had
+      its name masked by the confidence floor — promoting a guess we declined
+      to print into a discovery would contradict the guardrail it is under.
+    * A healthy verdict is never novel, by definition.
+    * An unnamed verdict ("Unknown", "غير معروف") discovered nothing: nobody
+      named a condition, so there is nothing to compare against the index.
+    * A "Possible: X" lead is a hypothesis the model declined to stand behind,
+      and is judged on its own terms only when the verdict is confirmed.
+    """
+    if status != "diseased":
+        return False
+    key = normalize_condition(disease)
+    if not key or key in _UNNAMED_CONDITIONS:
+        return False
+    if key.startswith("possible"):
+        return False
+    return not (taxonomy_knows(disease) or taxonomy_knows(disease_ar))
+
+
 #: What an uncertain verdict actually needs: a better photo, not a spray
 #: schedule. Both languages are supplied locally so the KB fallback stays
 #: usable offline, exactly like the healthy-care tips above.
@@ -399,7 +447,8 @@ CONDITION_TYPE_NONE = "None"
 
 _CONDITION_TYPES_ALL: tuple[str, ...] = (*CONDITION_TYPES, CONDITION_TYPE_NONE)
 
-#: Script twin of each class, so ``analysis_details`` reads as one sentence in
+#: Script twin of each class, so ``detailed_pathology_analysis`` reads as one
+#: sentence in
 #: either language instead of dropping an English taxonomy label mid-line.
 _CONDITION_TYPE_AR: dict[str, str] = {
     "Disease": "مرض",
@@ -541,6 +590,7 @@ def _matched_category(
     status: str,
     condition_type: str,
     texts: list[str],
+    disease: str = "",
 ) -> str:
     """Resolve the agronomic domain, without ever leaving the field blank.
 
@@ -552,11 +602,20 @@ def _matched_category(
        raised gall is bacterial (crown gall) or an insect's, and only the
        coarse class has already made that call, so no symptom word may
        overrule it.
-    4. Pathogen genus, then unambiguous symptom words, from the text.
-    5. ``Fungal Pathogen`` as an explicit prior for a disease with no other
+    4. The curated 610-condition reference index, when it holds this disease
+       by either name. A catalogued condition is a *fact* about which domain
+       it belongs to, so it outranks guessing from symptom words — this is
+       the whole point of keeping the index off the prompt but on the
+       server.
+    5. Pathogen genus, then unambiguous symptom words, from the text.
+    6. ``Fungal Pathogen`` as an explicit prior for a disease with no other
        signal — documented here rather than hidden, because ``status`` and
        ``disease`` carry the actual claim and this is only metadata about
        which domain it most likely belongs to.
+
+    The index is consulted for the domain only. It never supplies a disease
+    name, never lowers a confidence and never lifts a masked verdict — it
+    answers "which box does this go in", nothing more.
     """
     if status == "healthy":
         return MATCHED_CATEGORY_NONE
@@ -578,6 +637,18 @@ def _matched_category(
         return "Insect & Structural Damage"
     if condition_type in {"Environmental Stress", "Nutrient Deficiency"}:
         return "Physiological & Abiotic"
+
+    # The reference index, consulted for a condition it actually catalogues.
+    # Both scripts are tried because the model may answer in either, and a
+    # hit is only trusted when the domain it reports is one we accept — a
+    # defensive check, since the index and MATCHED_CATEGORIES are separate
+    # declarations that must not be able to drift into an invalid value.
+    for candidate in (disease, as_str(texts[0] if texts else "", "")):
+        if not candidate:
+            continue
+        domain = taxonomy_domain_for(candidate)
+        if domain in MATCHED_CATEGORIES:
+            return domain
 
     blob = " ".join(t for t in texts if t).lower()
     tokens = {w for w in "".join(c if c.isalpha() else " " for c in blob).split()}
@@ -728,7 +799,7 @@ def _fallback_analysis(
     symptoms: list[str],
     language: str,
 ) -> str:
-    """Compose ``analysis_details`` when the model left ``pathology`` empty.
+    """Compose ``detailed_pathology_analysis`` when the model left ``pathology`` empty.
 
     Guarantees the field is never blank — the request forbids returning nothing
     — without inventing a cause: the cause line names the pathogen only when the
@@ -951,12 +1022,16 @@ class DiagnosticAgent:
         The response additionally carries the universal-engine contract —
         ``detected_plant``, ``condition_type``, ``matched_category``,
         ``disease_name_en``, ``disease_name_ar``, ``confidence_score``,
-        ``analysis_details`` and ``treatment_plan``. Each is derived from the
+        ``detailed_pathology_analysis``, ``actionable_treatment_plan`` and
+        ``is_novel_discovery``. Each of the first seven is derived from the
         same local that built its legacy counterpart rather than read from the
         payload a second time, so the two views of one diagnosis cannot drift
-        apart. ``analysis_details`` is written locally for the undetermined
-        branch so that a guess never reaches the farmer as prose in the voice
-        of a confirmed diagnosis.
+        apart. ``detailed_pathology_analysis`` is written locally for the
+        undetermined branch so that a guess never reaches the farmer as prose
+        in the voice of a confirmed diagnosis. ``is_novel_discovery`` is the
+        one field the model never sees asked for: it is decided here, by
+        comparing the answer against the server-side reference index, because
+        the model has no way to know what that index holds.
 
         An undetermined verdict additionally carries ``provisional_disease``
         and ``provisional_disease_ar`` — the name the model proposed, kept out
@@ -1033,6 +1108,7 @@ class DiagnosticAgent:
             status=status,
             condition_type=condition_type,
             texts=[disease, pathology, as_str(report.get("pathogen"), ""), *symptoms],
+            disease=disease,
         )
 
         healthy = status == "healthy"
@@ -1092,7 +1168,8 @@ class DiagnosticAgent:
                     else _TREATMENT_FALLBACK_EN
                 )
 
-        # --- analysis_details: never blank, never a mislaid diagnosis -------
+        # --- detailed_pathology_analysis: never blank, never a mislaid
+        # diagnosis -------------------------------------------------------
         # Every response must carry one, so each branch falls back to composed
         # text when the model supplied none. For an undetermined verdict the
         # prose is written here rather than taken from the model, because the
@@ -1123,6 +1200,12 @@ class DiagnosticAgent:
         quality = as_str(report.get("image_quality"), "usable").lower()
         if quality not in {"good", "usable", "poor"}:
             quality = "usable"
+
+        # Open-ended discovery, resolved against the server-side index rather
+        # than by the model: the model has no way to know what we do or do
+        # not catalogue, so the comparison happens here where it can be
+        # tested offline. See `_is_novel_discovery` for why it stays narrow.
+        novel = _is_novel_discovery(status, disease, disease_ar)
 
         return {
             "is_leaf_image": bool(report.get("is_leaf_image", True)),
@@ -1167,8 +1250,14 @@ class DiagnosticAgent:
             "disease_name_en": disease,
             "disease_name_ar": disease_ar,
             "confidence_score": confidence,
-            "analysis_details": analysis_details,
-            "treatment_plan": recommendations,
+            # The prose and the plan, under their standard names. Both read
+            # from the same local as their legacy spelling used to, so there
+            # is no second place either could be written.
+            "detailed_pathology_analysis": analysis_details,
+            "actionable_treatment_plan": recommendations,
+            # True only when a confirmed verdict names a condition outside
+            # the 610-entry reference index — the discovery channel.
+            "is_novel_discovery": novel,
             "meta": {
                 "agent": self.name,
                 "model": model,

@@ -290,6 +290,7 @@ def main() -> int:
 
     print("\n=== 3d. Universal pathology domains + response contract ===")
     from agents.diagnostic_agent import MATCHED_CATEGORIES, MATCHED_CATEGORY_NONE
+    from agents import pathology_taxonomy as taxonomy
 
     def shape(**overrides):
         return norm(dict(base_report, **overrides), mime="image/jpeg",
@@ -312,35 +313,48 @@ def main() -> int:
     check("no pathogen genus list is inlined into the prompt",
           "Meloidogyne" not in prompt_en and "Pratylenchus" not in prompt_en)
 
-    eight = ("detected_plant", "condition_type", "matched_category",
-             "disease_name_en", "disease_name_ar", "confidence_score",
-             "analysis_details", "treatment_plan")
+    # The standardised wire contract. Nine keys, all of which every endpoint
+    # must return on every verdict — the four the engine request named
+    # (matched_category, disease_name_{en,ar}, confidence_score) plus the
+    # discovery flag and the two prose/plan fields under their standard
+    # names, alongside the plant and condition class.
+    contract = ("detected_plant", "condition_type", "matched_category",
+                "disease_name_en", "disease_name_ar", "confidence_score",
+                "detailed_pathology_analysis", "actionable_treatment_plan",
+                "is_novel_discovery")
     for label, overrides in (
         ("healthy", dict(status="healthy", disease="Healthy Plant", disease_ar="نبات سليم")),
         ("diseased", dict(status="diseased", disease="Early blight", disease_ar="اللفحة المبكرة")),
         ("uncertain", dict(status="uncertain", disease="Possible: Rust", confidence=0.4)),
     ):
         out = shape(**overrides)
-        missing = [k for k in eight if k not in out]
+        missing = [k for k in contract if k not in out]
         check(f"{label} carries every contract field", not missing, f"missing {missing}")
         check(f"{label} leaves the legacy keys intact",
               all(k in out for k in ("crop", "disease", "confidence",
                                      "recommendations", "status")),
               str([k for k in ("crop", "disease", "confidence", "recommendations", "status")
                    if k not in out]))
-        check(f"{label} analysis_details is never blank",
-              bool(str(out["analysis_details"]).strip()))
+        check(f"{label} detailed_pathology_analysis is never blank",
+              bool(str(out["detailed_pathology_analysis"]).strip()))
         check(f"{label} matched_category is never blank", bool(out["matched_category"]))
         check(f"{label} disease_name_en mirrors disease",
               out["disease_name_en"] == out["disease"])
         check(f"{label} disease_name_ar mirrors disease_ar",
               out["disease_name_ar"] == out["disease_ar"])
-        check(f"{label} treatment_plan mirrors recommendations",
-              out["treatment_plan"] == out["recommendations"])
+        check(f"{label} actionable_treatment_plan mirrors recommendations",
+              out["actionable_treatment_plan"] == out["recommendations"])
+        check(f"{label} is_novel_discovery is a bool",
+              isinstance(out["is_novel_discovery"], bool))
 
+    # The interim names are retired, and the standardised ones replace them.
+    retired = shape(status="diseased", disease="Early blight")
     check("the interim field names were retired",
-          "detailed_analysis" not in shape(status="diseased", disease="X")
-          and "recommended_treatment" not in shape(status="diseased", disease="X"))
+          "detailed_analysis" not in retired
+          and "recommended_treatment" not in retired)
+    check("the superseded prose/plan names were retired",
+          "analysis_details" not in retired and "treatment_plan" not in retired,
+          str([k for k in ("analysis_details", "treatment_plan") if k in retired]))
 
     check("a healthy plant has no domain",
           shape(status="healthy", disease="Healthy Plant")["matched_category"]
@@ -418,6 +432,70 @@ def main() -> int:
     check("a healthy verdict is never echoed as a probable name",
           healthy_echo["provisional_disease"] == ""
           and healthy_echo["provisional_disease_ar"] == "")
+
+    # --- the server-side reference index --------------------------------
+    # The 500+ classification lives HERE and not in the prompt, which the
+    # context-budget assertion above proves: a list this size could not ride
+    # along with an image. These checks hold the claim itself to its word so
+    # "500+" cannot quietly rot into "whatever entries remain".
+    check("the reference index holds 500+ conditions",
+          taxonomy.INDEX_SIZE >= 500, f"only {taxonomy.INDEX_SIZE}")
+    check("the index spans every prompt domain",
+          {e.domain for e in taxonomy.ENTRIES} == set(MATCHED_CATEGORIES),
+          str({e.domain for e in taxonomy.ENTRIES} ^ set(MATCHED_CATEGORIES)))
+    check("no entry claims a domain the prompt does not accept",
+          all(e.domain in MATCHED_CATEGORIES for e in taxonomy.ENTRIES))
+    check("every Arabic name resolves to a catalogued condition",
+          all(taxonomy.resolve(e.name_ar) is not None for e in taxonomy.ENTRIES))
+    check("every entry resolves to its own domain",
+          all(taxonomy.domain_for(e.name_en) == e.domain for e in taxonomy.ENTRIES))
+    check("lookup folds case, punctuation and tashkeel",
+          taxonomy.resolve("EARLY  BLIGHT!") is not None
+          and taxonomy.resolve("اللفحه المبكره") is not None)
+    check("a qualified name resolves through its head",
+          taxonomy.resolve("Bacterial wilt of beans") is not None,
+          "head of a qualified name should still match")
+    check("an unknown condition is not catalogued",
+          taxonomy.resolve("Quinoxycetium nonexistentium") is None)
+    check("a bare genus is not resolved to an arbitrary disease",
+          taxonomy.resolve("Fusarium") is None,
+          f"got {taxonomy.resolve('Fusarium')}")
+    check("the scope digest is counts only, never names",
+          "Early blight" not in taxonomy.digest())
+
+    # The index is consulted for the DOMAIN only, and it must be able to
+    # beat the documented fungal prior: "Citrus canker" with no genus and no
+    # recognised symptom word would otherwise be filed as fungal, which is
+    # wrong, while the catalogue knows it is bacterial.
+    check("a catalogued condition supplies its own domain",
+          shape(status="diseased", disease="Citrus canker", pathogen="Unknown",
+                confidence=0.92)["matched_category"] == "Bacterial Pathogen",
+          "the index should beat the fungal prior here")
+
+    # --- open-ended discovery -------------------------------------------
+    # A condition outside the index is flagged, and every verdict that did
+    # not actually name one is not — a false "novel" sends an operator to
+    # review a condition nobody claimed.
+    check("a catalogued disease is not a discovery",
+          shape(status="diseased", disease="Early blight",
+                disease_ar="اللفحة المبكرة",
+                confidence=0.92)["is_novel_discovery"] is False)
+    check("a condition outside the index is flagged",
+          shape(status="diseased", disease="Quinoxycetium nonexistentium",
+                disease_ar="مرض غير موجود",
+                confidence=0.92)["is_novel_discovery"] is True)
+    check("an unnamed verdict is never a discovery",
+          shape(status="diseased", disease="Unknown", disease_ar="غير معروف",
+                confidence=0.92)["is_novel_discovery"] is False)
+    check("an undetermined verdict never claims a discovery",
+          guarded["is_novel_discovery"] is False,
+          "the confidence floor must not be bypassed by a discovery flag")
+    check("a healthy verdict never claims a discovery",
+          shape(status="healthy",
+                disease="Healthy Plant")["is_novel_discovery"] is False)
+    check("a sub-floor guess is never a discovery",
+          shape(status="uncertain", disease="Possible: Rust",
+                confidence=0.4)["is_novel_discovery"] is False)
 
     ar_guess = norm(dict(base_report, status="uncertain", disease="Possible: Rust",
                          disease_ar="الصدأ", confidence=0.4),
