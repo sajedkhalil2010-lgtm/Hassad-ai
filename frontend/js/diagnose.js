@@ -149,7 +149,12 @@ export function initDiagnose({ onResult } = {}) {
     const d = report.diagnosis || {};
     const overall = (report.confidence && report.confidence.overall) ?? d.confidence ?? 0;
     const confidence = pct(overall);
-    const provisional = Boolean(
+    // Two separate things share the word "provisional" here, which is how the
+    // name below ended up declared twice — an early SyntaxError that took the
+    // whole module (and every listener behind it) down. This one is a FLAG:
+    // it drives the amber tone on the confidence gauge. The probable NAME,
+    // declared further down, drives the badge.
+    const lowConfidence = Boolean(
       d.low_confidence || (report.confidence && report.confidence.provisional),
     );
     const severity = SEVERITIES.includes(d.severity) ? d.severity : "moderate";
@@ -167,7 +172,7 @@ export function initDiagnose({ onResult } = {}) {
 
     // Tone is carried separately from the value, so an amber read is
     // visible without altering the figure it describes.
-    if (provisional) els.ringConfidence.setAttribute("data-tone", "low");
+    if (lowConfidence) els.ringConfidence.setAttribute("data-tone", "low");
     else els.ringConfidence.removeAttribute("data-tone");
     els.confNum.textContent = String(confidence);
 

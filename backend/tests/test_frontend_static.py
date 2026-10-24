@@ -91,6 +91,30 @@ def exports_of(src: str) -> set[str]:
     return names
 
 
+def _media_block(css: str, feature: str) -> str | None:
+    """Return the body of the first ``@media`` whose query names *feature*.
+
+    A non-greedy ``[^}]*`` cannot be used for this: the reduced-motion query
+    holds several rules of its own, so the first inner brace would cut the
+    block short before the property being looked for. Brace-count instead.
+    """
+    start = css.find(f"@media ({feature}")
+    if start < 0:
+        return None
+    open_at = css.find("{", start)
+    if open_at < 0:
+        return None
+    depth = 0
+    for pos in range(open_at, len(css)):
+        if css[pos] == "{":
+            depth += 1
+        elif css[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[open_at + 1:pos]
+    return None
+
+
 def main() -> int:
     if not (ROOT / "index.html").is_file():
         print(f"  [FAIL] frontend not found at {ROOT}")
@@ -342,6 +366,38 @@ def main() -> int:
     check("the probable badge is translated in both locales",
           "badge_probable" in renderer and "تشخيص محتمل" in i18n_src
           and "Probable diagnosis" in i18n_src)
+
+    # --- navigation must survive every viewport --------------------------
+    # Two bugs the markup could not show on its own: the section links were
+    # display:none below 1040px with no hamburger or drawer anywhere in the
+    # document standing in for them (so a phone had no route to #how at all),
+    # and the header is sticky, so a jump that did work parked the heading
+    # underneath a translucent bar. Both are pinned here because neither
+    # produces a broken element — they produce a working element that goes
+    # nowhere useful.
+    print("\n--- navigation survives the small viewports ---")
+    nav_links = re.findall(r'<a\s+href="(#[^"]+)"[^>]*data-i18n="nav_', html)
+    check("the three section links are still declared",
+          nav_links == ["#how", "#modules", "#why"], repr(nav_links))
+    for anchor in nav_links:
+        check(f"anchor {anchor} resolves to a real id",
+              f'id="{anchor[1:]}"' in html)
+    check("the section nav is never hidden by its own rule",
+          re.search(r"\.lnav\s*\{[^}]*display:\s*none", css) is None,
+          ".lnav{display:none} leaves phones with no navigation at all")
+    check("the small viewport gets the nav row instead of a removal",
+          "@media (max-width: 1040px)" in css
+          and re.search(r"\.lnav\s*\{[^}]*overflow-x:\s*auto", css) is not None)
+    check("the sticky header clears an anchor target",
+          css.count("scroll-margin-top") >= 3
+          and "position: sticky" in css,
+          "without clearance the heading lands behind the sticky bar")
+    check("smooth scrolling is enabled for in-page jumps",
+          "scroll-behavior: smooth" in css)
+    reduced = _media_block(css, "prefers-reduced-motion") or ""
+    check("a reduced-motion user still gets instant jumps",
+          "scroll-behavior: auto" in reduced,
+          "the reduced-motion query must override the smooth glide")
 
     print(f"\n{'='*52}\nTOTAL: {PASS} passed, {FAIL} failed\n{'='*52}")
     return 1 if FAIL else 0

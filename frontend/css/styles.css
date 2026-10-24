@@ -141,6 +141,12 @@ pre { margin: 0; }
 }
 
 .hidden { display: none !important; }
+
+/* The landing header is sticky, so a native anchor jump lands the target at
+   y=0 — underneath the bar, heading hidden behind a translucent blur. This is
+   the clearance that makes "#how" actually readable after clicking. It has to
+   grow on the smaller breakpoints, where the header itself grows. */
+[id] { scroll-margin-top: 74px; }
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -855,6 +861,10 @@ body[data-theme="light"] .ico-moon { display: none; }
 /* ==================================================== RESPONSIVE ========= */
 
 @media (max-width: 1040px) {
+  /* Wrapping is what lets the nav take its own full-width row below. */
+  .lhead__inner { flex-wrap: wrap; row-gap: var(--sp-3); }
+  /* The header is now two rows tall, so anchors need more clearance. */
+  [id] { scroll-margin-top: 108px; }
   .hero { grid-template-columns: minmax(0, 1fr); }
   .mock { order: -1; }
   .app { grid-template-columns: minmax(0, 1fr); }
@@ -869,10 +879,30 @@ body[data-theme="light"] .ico-moon { display: none; }
   .snav__label { display: none; }
   .snav__item { white-space: nowrap; }
   .profile { margin: 0; flex: none; }
-  .lnav { display: none; }
+  /* The nav used to be display:none below this width, which meant the three
+     section links did not merely move — they became unreachable, with no
+     hamburger or drawer anywhere in the markup to stand in for them. It now
+     stays on its own row and scrolls sideways instead, so a phone and a
+     desktop reach the same three anchors. */
+  .lnav {
+    order: 3;
+    flex: 1 1 100%;
+    margin-inline-start: 0;
+    justify-content: center;
+    gap: clamp(16px, 6vw, var(--sp-5));
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    padding-block-end: 2px;
+  }
+  .lnav::-webkit-scrollbar { display: none; }
+  .lnav a { flex: 0 0 auto; white-space: nowrap; }
 }
 
 @media (max-width: 620px) {
+  /* Brand, then actions, then the nav: three rows, so the anchor clearance
+     grows again to match. */
+  [id] { scroll-margin-top: 156px; }
   body { font-size: 14.5px; }
   .lhead__inner { flex-wrap: wrap; gap: var(--sp-3); }
   .lhead__actions { width: 100%; }
