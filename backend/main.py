@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agents import AgentError, ChatAgent, SupervisorAgent, Settings, get_settings
 from auth import AuthStore, build_auth_router
@@ -63,6 +64,31 @@ KIND_TO_STATUS: dict[str, int] = {
     "upstream": 502,
     "api": 502,
 }
+
+#: The mirror of KIND_TO_STATUS: status code -> the `kind` the transport
+#: layer already speaks. Declared separately rather than inverted at runtime
+#: because a status can legitimately map to several kinds on the way out
+#: (400 is both "bad upload" and "bad body"), but must mean exactly one
+#: thing on the way back.
+STATUS_TO_KIND: dict[int, str] = {
+    400: "input",
+    404: "input",
+    405: "input",
+    413: "input",
+    415: "input",
+    401: "auth",
+    403: "auth",
+    429: "quota",
+    500: "api",
+    502: "upstream",
+    503: "busy",
+    504: "upstream",
+}
+
+#: Codes where retrying is the caller's correct next move: nothing was wrong
+#: with the request, only this attempt. Everything else under 500 is the
+#: caller's problem, and telling a farmer to "try again" would loop them.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 def _validation_message(exc: RequestValidationError) -> str:
@@ -276,6 +302,45 @@ def create_app(
                     "kind": "input",
                     "message": _validation_message(exc),
                     "retryable": False,
+                },
+            },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        """Wrap every HTTPException in the SAME envelope as a validation error.
+
+        FastAPI's default body is ``{"detail": "..."}``, and ``api.js`` reads
+        ``payload.error.message`` — so with the default every message written
+        here was silently discarded and the farmer saw
+        ``Request failed (HTTP 400)`` instead of *"The uploaded file is
+        empty."* or *"File too large. Maximum size is 10.0 MB."* The two
+        failure shapes existed on purpose for the validation path above;
+        this brings the rest of them into line.
+
+        Registered against the **Starlette** base class rather than
+        ``fastapi.HTTPException`` because that is what the exception
+        middleware resolves by walking the MRO — and Starlette is what
+        ``StaticFiles`` and the router's own not-found raise. Registering on
+        the subclass alone would leave every 404 and 405 on the old shape.
+        """
+        status = exc.status_code
+        detail = exc.detail
+        message = detail if isinstance(detail, str) else str(detail)
+        logger.info(
+            "HTTP %s for %s %s: %s", status, request.method, request.url.path, message
+        )
+        return JSONResponse(
+            status_code=status,
+            # Preserved, not dropped: WWW-Authenticate on a 401 and friends
+            # are part of the contract this envelope rides on.
+            headers=getattr(exc, "headers", None),
+            content={
+                "ok": False,
+                "error": {
+                    "kind": STATUS_TO_KIND.get(status, "api" if status >= 500 else "input"),
+                    "message": message,
+                    "retryable": status in RETRYABLE_STATUS,
                 },
             },
         )
