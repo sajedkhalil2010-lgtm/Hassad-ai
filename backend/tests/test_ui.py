@@ -65,8 +65,36 @@ def main() -> int:
     check("links the stylesheet", "/assets/css/styles.css" in html)
     check("links the script", "/assets/js/app.js" in html)
     check("stylesheet kept out of the document", "<style" not in html)
-    check("script kept out of the document", "<script>" not in html)
     check("entry is an ES module, not a classic script", 'type="module"' in html)
+
+    # The document may carry EXACTLY ONE inline script: the safety net at the
+    # bottom of <body> that wires the primary controls when the module graph
+    # never arrives (an import 404, a syntax error, a rejected file — all of
+    # which leave every boot() listener silently absent). Asserting the COUNT
+    # rather than dropping the rule keeps a second inline block from creeping
+    # in unnoticed, and the guards below pin what that one block may be:
+    # wrapped so it cannot throw, deferred past the module, standing down
+    # once app.js has booted, and binding by listener rather than attribute.
+    inline = re.findall(r"<script>(.*?)</script>", html, re.S)
+    check("exactly one inline safety-net script", len(inline) == 1,
+          f"found {len(inline)}")
+    if inline:
+        net = inline[0]
+        check("safety net cannot throw out of its own wrapper",
+              "try {" in net and "catch" in net)
+        check("safety net stands down once app.js has booted",
+              "data-app-ready" in net)
+        check("safety net defers to DOMContentLoaded (modules run first)",
+              "DOMContentLoaded" in net)
+        check("safety net binds by listener, not by onclick attribute",
+              "onclick=" not in net)
+        try:
+            import esprima
+
+            esprima.parseScript(net)
+            check("safety net parses", True)
+        except Exception as exc:  # noqa: BLE001 - the message is the finding
+            check("safety net parses", False, str(exc))
     check("no external CDN/dependencies", "http://" not in html.replace("http://127.0.0.1", "")
           and "https://cdn" not in html and "//cdn" not in html)
 

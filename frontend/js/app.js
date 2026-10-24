@@ -242,6 +242,14 @@ function boot() {
   connLabel = $("conn-label");
   refreshConnection();
   startPolling();
+
+  /* Last statement on purpose. The inline safety net in index.html reads
+     this to decide whether the module graph actually arrived — so it may
+     only be stamped once every listener above is attached. Partial boot +
+     fallback binding is harmless (opening the studio twice or scrolling
+     twice is idempotent); a boot that never finished must not be mistaken
+     for a finished one. */
+  document.documentElement.dataset.appReady = "1";
 }
 
 /* ---------------------------------------------------------- start here -- */

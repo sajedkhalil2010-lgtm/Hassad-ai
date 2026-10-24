@@ -589,5 +589,84 @@
 <noscript><p class="noscript">هذه الصفحة تحتاج JavaScript للاتصال بخلفية حصاد AI.</p></noscript>
 
 <script type="module" src="/assets/js/app.js"></script>
+
+<!-- =========================================================================
+     Inline safety net — deliberately the last thing in <body>.
+
+     app.js is a module graph: if any file 404s, throws, or is rejected for a
+     syntax error, NONE of it runs and every listener in boot() is silently
+     absent — which is indistinguishable from dead buttons. This block has no
+     imports and uses ES5 syntax, so it still executes in exactly that case.
+
+     It stands DOWN on a healthy load. Modules are deferred, so app.js runs
+     before DOMContentLoaded; boot() stamps <html data-app-ready> as its LAST
+     statement. Deferring to the event rather than checking immediately is the
+     whole trick: at parse time the flag is always unset, so an eager check
+     would double-bind every control on a page that was never broken.
+
+     Everything is wrapped — a throw in here must never become the reason the
+     page stops responding.
+
+     NOTE on scrolling: this targets the section element, never a pixel
+     offset. An 800px or 1200px scroll is a guess that is right only at the
+     viewport it was measured on, and for "ابدأ التشخيص الآن" it would fight
+     the button's actual job (opening the studio) by scrolling the newly
+     revealed workspace. scrollIntoView() lands correctly at every width.
+     ========================================================================= -->
+<script>
+  (function () {
+    "use strict";
+
+    function scrollToId(id) {
+      var target = document.getElementById(id);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+      try {
+        if (document.documentElement.getAttribute("data-app-ready")) return;
+        console.warn("[hassad] app.js did not boot — inline safety net is taking over.");
+
+        /* "ابدأ التشخيص الآن": the same route boot() takes, re-expressed in
+           plain DOM calls because enterDashboard is module-scoped and its
+           absence is precisely the situation being handled. */
+        var start = document.getElementById("hero-start");
+        if (start) {
+          start.addEventListener("click", function () {
+            var landing = document.getElementById("landing");
+            var app = document.getElementById("app");
+            if (!landing || !app) { scrollToId("how"); return; }
+            landing.classList.add("hidden");
+            app.classList.remove("hidden");
+            document.body.setAttribute("data-view", "dashboard");
+            document.body.setAttribute("data-panel", "studio");
+            var panels = document.querySelectorAll("[data-view-panel]");
+            for (var i = 0; i < panels.length; i++) {
+              panels[i].classList.toggle("hidden",
+                panels[i].getAttribute("data-view-panel") !== "studio");
+            }
+            var dropzone = document.getElementById("dropzone");
+            if (dropzone) dropzone.focus();
+          });
+        }
+
+        /* The section links. Native <a href="#how"> already scrolls with no
+           JavaScript at all, so this is a second explicit path to the same
+           destination rather than a replacement for the anchor. */
+        var links = document.querySelectorAll('.lnav a[href^="#"]');
+        for (var n = 0; n < links.length; n++) {
+          (function (link) {
+            link.addEventListener("click", function (event) {
+              event.preventDefault();
+              scrollToId(link.getAttribute("href").slice(1));
+            });
+          })(links[n]);
+        }
+      } catch (err) {
+        console.error("[hassad] inline safety net failed:", err);
+      }
+    });
+  })();
+</script>
 </body>
 </html>
