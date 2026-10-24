@@ -90,10 +90,20 @@ const auth = initAuth({
   onGuest: () => enterDashboard(),
 });
 
-/* View controls on the landing page. */
-for (const id of ["landing-login", "landing-signup", "hero-start"]) {
+/* Account entry points on the landing page. */
+for (const id of ["landing-login", "landing-signup"]) {
   $(id)?.addEventListener("click", () => auth.open());
 }
+
+/* The primary CTA says "start diagnosing now", and diagnosis needs no
+   account — so it goes straight to the studio and puts the cursor in the
+   dropzone instead of parking a sign-in dialog between a farmer and the
+   tool. Anyone who does want a session still has the two links above; this
+   is the same route "New diagnosis" takes in the workspace. */
+$("hero-start")?.addEventListener("click", () => {
+  enterDashboard("studio");
+  diagnose.focusDropzone();
+});
 
 /* Theme toggle — landing only. The workspace has no light variant, and this
    control never reaches into it: the rules it flips are scoped to .landing. */

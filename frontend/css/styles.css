@@ -88,7 +88,14 @@ body[data-theme="light"] .landing {
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+/* The landing page navigates entirely by anchor (#how, #modules, #why), and an
+   instant jump gives no sense of where the section came from. Smooth travel is
+   the feedback that the click landed; it is switched back off for anyone who
+   has asked the OS for reduced motion. */
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
 
 body {
   margin: 0;
@@ -231,6 +238,7 @@ pre { margin: 0; }
   transition: color .16s var(--ease), background .16s var(--ease);
 }
 .ghost:hover { color: var(--ink); background: var(--glass-2); }
+.ghost:active { background: var(--glass); }
 .ghost--sm { padding: 6px 11px; font-size: 12.5px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 
 .iconbtn {
@@ -240,6 +248,7 @@ pre { margin: 0; }
   transition: color .16s var(--ease), background .16s var(--ease), border-color .16s var(--ease);
 }
 .iconbtn:hover { color: var(--ink); background: var(--glass-2); border-color: var(--line); }
+.iconbtn:active { background: var(--glass); }
 .iconbtn svg { width: 17px; height: 17px; }
 
 /* ----------------------------------------------------------------- brand */
@@ -274,6 +283,9 @@ pre { margin: 0; }
 .lnav { display: flex; gap: var(--sp-5); margin-inline-start: auto; font-size: 14px; }
 .lnav a { color: var(--ink-2); transition: color .16s var(--ease); }
 .lnav a:hover { color: var(--ink); }
+/* These are inline elements, so transform would be ignored outright — a
+   colour shift is the press feedback that actually renders. */
+.lnav a:active { color: var(--emerald); }
 .lhead__actions { display: flex; align-items: center; gap: var(--sp-2); }
 
 .ico-sun { display: none; }
@@ -884,6 +896,8 @@ body[data-theme="light"] .ico-moon { display: none; }
   }
   /* The gauges must still SHOW their value — only the sweep is suppressed. */
   .ring__value { transition: none; }
+  /* ...and the anchor links jump rather than glide. */
+  html { scroll-behavior: auto; }
 }
 
 @media print {
