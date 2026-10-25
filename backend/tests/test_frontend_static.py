@@ -135,7 +135,7 @@ def main() -> int:
     # depends on is actually there — the import-resolution pass below then
     # proves each one resolves to a real export.
     CORE_MODULES = {"api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
-                    "i18n.js", "history.js", "app.js"}
+                    "i18n.js", "history.js", "pricing.js", "app.js"}
     check("all core modules are present on disk",
           CORE_MODULES <= set(modules),
           f"missing {sorted(CORE_MODULES - set(modules))}")
@@ -214,6 +214,7 @@ def main() -> int:
         "tab-register", "auth-submit", "auth-signed-out", "auth-signed-in",
         "auth-status", "auth-who", "auth-avatar", "auth-admin-view",
         "admin-output", "account-trigger", "conn", "conn-label",
+        "plan-modal",
     }
     referenced = set()
     for src in modules.values():

@@ -15,7 +15,7 @@ FAIL = 0
 
 #: ES modules the page loads. app.js is the entry; it imports the rest.
 MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
-           "i18n.js", "history.js", "app.js")
+           "i18n.js", "history.js", "pricing.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
@@ -215,6 +215,54 @@ def main() -> int:
               "javascript" in res.headers.get("content-type", ""),
               f"got {res.headers.get('content-type')}")
         modules[name] = res.text
+
+    print("\n=== Pricing panel (demo) ===")
+    # A price shown next to no checkout is a promise the app cannot keep,
+    # so the demo framing has to live in the markup itself — not be
+    # inferred from the absence of a payment form.
+    check("pricing panel present", 'data-view-panel="pricing"' in html)
+    check("pricing reachable from the sidebar",
+          'data-panel-target="pricing"' in html)
+    check("advertised as a demo", "pricing_demo" in html)
+    for tier in ("free", "pro", "ent"):
+        check(f"{tier} tier rendered", f'data-i18n="plan_{tier}_t"' in html)
+        check(f"{tier} tier has a call to action",
+              f'data-i18n="plan_{tier}_cta"' in html)
+    check("pro tier is marked coming soon", "plan_pro_badge" in html)
+    check("paid tiers open the notice, not a checkout",
+          'data-plan="pro"' in html and 'data-plan="enterprise"' in html)
+    check("free tier routes to the studio",
+          'data-panel-target="studio"' in html)
+    check("notice dialog present and wired",
+          'id="plan-modal"' in html and '"plan-modal"' in modules["pricing.js"])
+    check("notice uses the required copy",
+          "early preview / free access phase" in modules["i18n.js"])
+    check("no payment form anywhere",
+          not re.search(r"<form[^>]*(pay|billing|card)", html, re.I))
+    check("notice is not the only closed dialog",
+          "Escape" in modules["pricing.js"])
+
+    print("\n=== bilingual coverage ===")
+    # data-i18n resolves through t(), which falls back to the key itself —
+    # so a key missing from one pack never throws, it renders "plan_pro_t"
+    # in front of a farmer. Asserting both packs is what stops a string
+    # being added in one language only.
+    src = modules["i18n.js"]
+    ar_at, en_at = src.index("ar: {"), src.index("en: {")
+    ar_block = src[ar_at + 5:en_at]          # skip "ar: {"
+    en_block = src[en_at + 5:]               # skip "en: {"
+    keys = sorted(set(re.findall(r'data-i18n="([^"]+)"', html)))
+    pat = lambda block: set(re.findall(r"\b([a-z0-9_]+):\s*\"", block))
+    missing_ar = [k for k in keys if k not in pat(ar_block)]
+    missing_en = [k for k in keys if k not in pat(en_block)]
+    check(f"all {len(keys)} data-i18n keys exist in the Arabic pack",
+          not missing_ar, str(missing_ar))
+    check(f"all {len(keys)} data-i18n keys exist in the English pack",
+          not missing_en, str(missing_en))
+    check("the two packs carry the same keys",
+          pat(ar_block) == pat(en_block),
+          f"only-ar={sorted(pat(ar_block) - pat(en_block))} "
+          f"only-en={sorted(pat(en_block) - pat(ar_block))}")
 
     # Assertions about the app as a whole rather than one file: splitting into
     # modules must not let a guarantee quietly evaporate into a file the test

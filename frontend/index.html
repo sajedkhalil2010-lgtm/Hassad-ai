@@ -240,6 +240,14 @@
         <span data-i18n="nav_assistant">المساعد الزراعي</span>
         <span class="ai-badge">AI</span>
       </button>
+
+      <p class="snav__label" data-i18n="group_plan">التخطيط المالي</p>
+      <!-- Pricing is a demo panel: no payment gateway behind it, so the copy
+           says "preview" rather than implying a checkout that does not exist. -->
+      <button type="button" class="snav__item" data-panel-target="pricing">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.6 12.4 12 4h7.4v7.4L11 19.8a2 2 0 0 1-2.8 0l-4.6-4.6a2 2 0 0 1 0-2.8Z"/><circle cx="15.4" cy="8.6" r="1.3"/></svg>
+        <span data-i18n="nav_pricing">الأسعار والخطط</span>
+      </button>
     </nav>
 
     <div class="profile">
@@ -464,6 +472,125 @@
         <p class="empty glass hidden" id="history-empty" data-i18n="history_empty">لا توجد تشخيصات بعد. ابدأ من استوديو التشخيص.</p>
       </section>
 
+      <!-- ===== Pricing panel (DEMO) ================================== -->
+      <!-- Three tiers presented as a UI preview. Nothing here charges:
+           Free hands off to the studio through the ordinary panel routing,
+           and the two paid tiers open a notice instead of a checkout. -->
+      <section class="panel-view hidden" data-view-panel="pricing">
+
+        <header class="panel__head">
+          <div class="panel__lead">
+            <h1 class="panel__title" data-i18n="pricing_t">الأسعار ونموذج العمل</h1>
+            <p class="panel__hint" data-i18n="pricing_hint">معاينة لواجهة التسعير — لا توجد بوابة دفع متصلة. جميع الخطط مجانية خلال هذه المرحلة.</p>
+          </div>
+          <span class="demo-flag" data-i18n="pricing_demo">وضع تجريبي</span>
+        </header>
+
+        <div class="plans">
+
+          <!-- ---------- Free (B2C) ---------------------------------- -->
+          <article class="plan glass">
+            <header class="plan__head">
+              <span class="plan__ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m8.4 12.3 2.5 2.4 4.7-5"/></svg>
+              </span>
+              <div class="plan__titles">
+                <h2 class="plan__name" data-i18n="plan_free_t">المجانية</h2>
+                <p class="plan__seg" data-i18n="plan_free_seg">أفراد · B2C</p>
+              </div>
+            </header>
+
+            <p class="plan__price">
+              <span class="plan__amount" data-i18n="plan_free_amount">$0</span>
+              <span class="plan__per" data-i18n="plan_free_per">للأبد</span>
+            </p>
+
+            <p class="plan__desc" data-i18n="plan_free_d">كل ما يحتاجه المزارع للبدء — تشخيص فوري وبلا تكلفة.</p>
+
+            <ul class="plan__feats">
+              <li class="plan__feat" data-i18n="plan_free_f1">عدد محدود من فحوصات المحاصيل مجاناً</li>
+              <li class="plan__feat" data-i18n="plan_free_f2">معاينة فورية للتشخيص</li>
+              <li class="plan__feat" data-i18n="plan_free_f3">إرشاد أساسي بالعربية والإنجليزية</li>
+              <li class="plan__feat" data-i18n="plan_free_f4">بدون بطاقة بنكية</li>
+            </ul>
+
+            <!-- The one genuinely live action on this panel: routed by the
+                 ordinary [data-panel-target] handler already in app.js, so
+                 it needs no special case here. -->
+            <button type="button" class="btn btn--ghost btn--block plan__cta" data-panel-target="studio">
+              <span class="btn__text" data-i18n="plan_free_cta">ابدأ مجاناً</span>
+            </button>
+          </article>
+
+          <!-- ---------- Pro (B2C, not yet available) ---------------- -->
+          <article class="plan plan--featured glass glass--glow">
+            <span class="plan__flag" data-i18n="plan_pro_badge">قريباً · معاينة</span>
+            <header class="plan__head">
+              <span class="plan__ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9L12 3.5Z"/></svg>
+              </span>
+              <div class="plan__titles">
+                <h2 class="plan__name" data-i18n="plan_pro_t">برو</h2>
+                <p class="plan__seg" data-i18n="plan_pro_seg">مزارعون فرديون · B2C</p>
+              </div>
+            </header>
+
+            <p class="plan__price">
+              <span class="plan__amount" data-i18n="plan_pro_amount">$9</span>
+              <span class="plan__per" data-i18n="plan_pro_per">شهرياً</span>
+            </p>
+
+            <p class="plan__desc" data-i18n="plan_pro_d">تتبّع ميداني كامل وسجل تشخيصات غير محدود عبر الموسم.</p>
+
+            <ul class="plan__feats">
+              <li class="plan__feat" data-i18n="plan_pro_f1">فحوصات غير محدودة</li>
+              <li class="plan__feat" data-i18n="plan_pro_f2">تتبّع تاريخي للحقول عبر الموسم</li>
+              <li class="plan__feat" data-i18n="plan_pro_f3">سجل تشخيصات كامل مع درجات الثقة</li>
+              <li class="plan__feat" data-i18n="plan_pro_f4">تقارير قابلة للتصدير</li>
+            </ul>
+
+            <button type="button" class="btn btn--primary btn--block plan__cta" data-plan="pro">
+              <span class="btn__text" data-i18n="plan_pro_cta">اشترك الآن</span>
+            </button>
+          </article>
+
+          <!-- ---------- Enterprise / Co-op (B2B) -------------------- -->
+          <article class="plan glass">
+            <span class="plan__flag" data-i18n="plan_ent_badge">حسب العقد</span>
+            <header class="plan__head">
+              <span class="plan__ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7.5" width="8" height="12.5" rx="1"/><rect x="12.5" y="3.5" width="8" height="16.5" rx="1"/><path d="M6 11h3M6 14.5h3M15 7h3M15 10.5h3M15 14h3"/></svg>
+              </span>
+              <div class="plan__titles">
+                <h2 class="plan__name" data-i18n="plan_ent_t">المزارع والتعاونيات</h2>
+                <p class="plan__seg" data-i18n="plan_ent_seg">عقود موسمية · B2B</p>
+              </div>
+            </header>
+
+            <p class="plan__price">
+              <span class="plan__amount" data-i18n="plan_ent_amount">مخصص</span>
+              <span class="plan__per" data-i18n="plan_ent_per">حسب العقد السنوي</span>
+            </p>
+
+            <p class="plan__desc" data-i18n="plan_ent_d">عقود موسمية مصمّمة للمزارع الكبيرة والتعاونيات الزراعية.</p>
+
+            <ul class="plan__feats">
+              <li class="plan__feat" data-i18n="plan_ent_f1">تسعير حسب مساحة الأرض وحجم الفريق</li>
+              <li class="plan__feat" data-i18n="plan_ent_f2">تكامل عبر واجهة برمجية للبيانات</li>
+              <li class="plan__feat" data-i18n="plan_ent_f3">تدريب ميداني وأولوية في الدعم</li>
+              <li class="plan__feat" data-i18n="plan_ent_f4">تقارير موسمية للتعاونية</li>
+            </ul>
+
+            <button type="button" class="btn btn--outline btn--block plan__cta" data-plan="enterprise">
+              <span class="btn__text" data-i18n="plan_ent_cta">اطلب عرضاً</span>
+            </button>
+          </article>
+
+        </div>
+
+        <p class="pricing-note glass" data-i18n="pricing_note">الأسعار المعروضة تقديرية لأغراض العرض فقط. لا تُخصم أي عملية دفع، وتبقى جميع الخطط مفتوحة ومجاناً.</p>
+      </section>
+
     </main>
   </div>
 </div>
@@ -583,6 +710,39 @@
       <pre class="adminout hidden" id="admin-output"></pre>
     </div>
 
+  </div>
+</div>
+
+<!-- ===================================================================== -->
+<!-- PRICING NOTICE (demo)                                                  -->
+<!-- Shown instead of a checkout: there is no payment gateway, so "subscribe" -->
+<!-- answers with a polite note rather than pretending to take money.        -->
+<!-- ===================================================================== -->
+<div class="modal hidden" id="plan-modal" role="dialog" aria-modal="true" aria-labelledby="plan-modal-title">
+  <div class="modal__backdrop" data-close></div>
+
+  <div class="modal__panel glass glass--glow">
+    <header class="modal__head">
+      <h2 id="plan-modal-title" data-i18n="plan_modal_t">شكراً لاهتمامك!</h2>
+      <button type="button" class="iconbtn" data-close aria-label="إغلاق">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6 18 18M18 6 6 18"/></svg>
+      </button>
+    </header>
+
+    <span class="planmodal__ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 8.2v4.4M12 15.6v.01"/></svg>
+    </span>
+
+    <!-- Filled at open time with the tier that was clicked, so the notice
+         reads as an answer to a specific question rather than a popup. -->
+    <p class="planmodal__plan" id="plan-modal-plan"></p>
+
+    <p class="planmodal__body" data-i18n="plan_modal_b">شكراً لاهتمامك! حصاد AI حالياً في مرحلة المعاينة المبكرة والوصول المجاني.</p>
+    <p class="planmodal__note" data-i18n="plan_modal_note">سنُعلمك فور توفر الاشتراكات المدفوعة — ويمكنك المتابعة بالمجان في هذه الأثناء.</p>
+
+    <button type="button" class="btn btn--primary btn--block" data-close>
+      <span class="btn__text" data-i18n="plan_modal_ok">حسناً</span>
+    </button>
   </div>
 </div>
 

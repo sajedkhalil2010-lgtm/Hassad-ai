@@ -30,6 +30,7 @@ import { initChat } from "./chat.js";
 import { initDiagnose } from "./diagnose.js";
 import { initHistory } from "./history.js";
 import { initI18n } from "./i18n.js";
+import { initPricing } from "./pricing.js";
 
 const body = document.body;
 
@@ -159,6 +160,9 @@ function boot() {
   initChat({ getContext: () => diagnose.getContext() });
   initHistory();
   initI18n();
+  // After initI18n so the stored language is already applied when the
+  // notice first renders its composed tier label.
+  initPricing();
 
   auth = initAuth({
     onChange(user) {
