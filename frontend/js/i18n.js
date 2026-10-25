@@ -117,8 +117,11 @@ const STRINGS = {
     plan_ent_f3: "تدريب ميداني وأولوية في الدعم",
     plan_ent_f4: "تقارير موسمية للتعاونية",
     plan_ent_cta: "اطلب عرضاً",
+    /* Title + body together say the required sentence once. Carrying it in
+       both would make a small dialog greet the reader with the same words
+       two lines apart. */
     plan_modal_t: "شكراً لاهتمامك!",
-    plan_modal_b: "شكراً لاهتمامك! حصاد AI حالياً في مرحلة المعاينة المبكرة والوصول المجاني.",
+    plan_modal_b: "حصاد AI حالياً في مرحلة المعاينة المبكرة والوصول المجاني.",
     plan_modal_plan: "الخطة",
     plan_modal_note: "سنُعلمك فور توفر الاشتراكات المدفوعة — ويمكنك المتابعة بالمجان في هذه الأثناء.",
     plan_modal_ok: "حسناً",
@@ -224,8 +227,11 @@ const STRINGS = {
     plan_ent_f3: "Field training and priority support",
     plan_ent_f4: "Seasonal reporting for the co-op",
     plan_ent_cta: "Request a quote",
+    /* Title + body together say the required sentence once. Carrying it in
+       both would make a small dialog greet the reader with the same words
+       two lines apart. */
     plan_modal_t: "Thank you for your interest!",
-    plan_modal_b: "Thank you for your interest! Hassad AI is currently in early preview / free access phase.",
+    plan_modal_b: "Hassad AI is currently in early preview / free access phase.",
     plan_modal_plan: "Plan",
     plan_modal_note: "We will let you know the moment paid plans open — and you can keep using Hassad for free in the meantime.",
     plan_modal_ok: "Got it",
