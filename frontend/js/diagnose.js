@@ -18,6 +18,16 @@ import { currentLang, t } from "./i18n.js";
  *  authoritative — this guard just avoids a pointless upload. */
 const MAX_BYTES = 8 * 1024 * 1024;
 
+/** Longest edge the pipeline keeps anyway (``settings.max_image_side``).
+ *  A phone hands over 4-12 MB at 4000px; the model never sees past this, so
+ *  everything beyond it is upload time spent on pixels that get discarded. */
+const MAX_UPLOAD_SIDE = 1600;
+
+/** Quality for the client-side re-encode. Leaf discolouration and lesion
+ *  edges — the two things the verdict turns on — survive this comfortably,
+ *  while foliage is mostly low-frequency detail that drops away cleanly. */
+const JPEG_QUALITY = 0.82;
+
 const SEVERITIES = ["none", "low", "moderate", "high", "critical"];
 
 export function initDiagnose({ onResult } = {}) {
@@ -49,6 +59,13 @@ export function initDiagnose({ onResult } = {}) {
 
   /** @type {File|null} */
   let picked = null;
+  /** @type {File|null} What is actually uploaded — the photo, once encoded.
+   *  Starts as the original so a failed or still-running encode can never
+   *  leave the request without a file. */
+  let upload = null;
+  /** @type {Promise<File>|null} Encoding of the current preview, awaited at
+   *  submit time so a fast click cannot race it. */
+  let preparing = null;
   /** @type {string|null} Object URL for the current preview, revoked on swap. */
   let previewUrl = null;
   let busy = false;
@@ -67,12 +84,70 @@ export function initDiagnose({ onResult } = {}) {
     busy = next;
     els.analyze.disabled = next || !picked;
     show(els.analyzeSpin, next);
-    els.analyzeText.textContent = next ? "Analyzing…" : "Analyze";
+    // Keys, not literals: the idle label used to be hardcoded English, so the
+    // button flipped to "Analyze" the moment an image was picked on an
+    // Arabic screen — right above a status line that was translated.
+    els.analyzeText.textContent = next ? t("analyze_busy") : t("analyze");
     // Drives the wave and the sweeping highlight over the preview.
     els.dropzone.classList.toggle("is-uploading", next);
   }
 
   /* ---------------------------------------------------------- preview --- */
+
+  /** Encode the photo down to what the pipeline can use.
+   *
+   *  Never a downgrade: if any step fails, if the browser cannot decode the
+   *  file, or if the re-encode comes out no smaller than what arrived, the
+   *  original is returned untouched and the request behaves exactly as it
+   *  did before this function existed.
+   *
+   *  EXIF orientation is applied by the decode, deliberately. A canvas
+   *  round-trip drops the metadata tag, so a sideways photo sent raw would
+   *  reach the model sideways with nothing left for the backend to
+   *  transpose — which is why the orientation is requested explicitly here.
+   *  An engine that does not know the option raises, and we fall back to the
+   *  original rather than risk shipping a rotated leaf. */
+  async function compress(file) {
+    if (!self.createImageBitmap) return file;
+
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch {
+      return file;
+    }
+
+    try {
+      const scale = Math.min(
+        1,
+        MAX_UPLOAD_SIDE / Math.max(bitmap.width, bitmap.height),
+      );
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return file;
+      ctx.drawImage(bitmap, 0, 0, width, height);
+
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY);
+      });
+      if (!blob || blob.size >= file.size) return file;
+
+      const stem = String(file.name || "leaf").replace(/\.[^.]*$/, "") || "leaf";
+      return new File([blob], `${stem}.jpg`, {
+        type: "image/jpeg",
+        lastModified: file.lastModified || Date.now(),
+      });
+    } catch {
+      return file;
+    } finally {
+      if (bitmap && typeof bitmap.close === "function") bitmap.close();
+    }
+  }
 
   function accept(file) {
     if (!file) return;
@@ -90,6 +165,24 @@ export function initDiagnose({ onResult } = {}) {
     }
 
     picked = file;
+    // Safe default: if encoding never lands, this is what goes up — the file
+    // exactly as it arrived, which is what would have been sent before any of
+    // this existed. Encoding can therefore only ever make the upload smaller.
+    upload = file;
+    preparing = compress(file).then(
+      (out) => {
+        // Only adopt it if this is still the photo on screen; a swap while
+        // encoding ran leaves the newer file's own state alone.
+        if (picked !== file) return upload;
+        upload = out;
+        if (upload !== file) {
+          // The saving, on the number that decides how long the upload takes.
+          els.previewSize.textContent = `${bytes(file.size)} → ${bytes(upload.size)}`;
+        }
+        return upload;
+      },
+      () => file,
+    );
 
     // Swap the URL only after we know the file is acceptable, so a rejected
     // drop cannot leave a stale preview on screen.
@@ -120,6 +213,8 @@ export function initDiagnose({ onResult } = {}) {
 
   function discard() {
     picked = null;
+    upload = null;
+    preparing = null;
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
       previewUrl = null;
@@ -344,15 +439,31 @@ export function initDiagnose({ onResult } = {}) {
     if (!picked || busy) return;
 
     setBusy(true);
-    setStatus(t("st_analyzing"), "busy");
+    const label = t("st_analyzing");
+    setStatus(label, "busy");
 
-    const form = new FormData();
-    form.append("file", picked, picked.name || "leaf");
-    // The API answers in the interface language. Without this it defaults to
-    // English, and an Arabic farmer would get an English treatment plan.
-    form.append("language", currentLang());
+    // Seconds that keep moving, rather than a label frozen on screen. An
+    // "Analyzing…" that does not change for eight seconds reads as a hung
+    // page; a number that climbs says the request is alive and lets the
+    // farmer see it. It starts before the upload, so encoding counts too.
+    const started = Date.now();
+    const tick = setInterval(() => {
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      setStatus(`${label} · ${secs} s`, "busy");
+    }, 250);
 
     try {
+      const form = new FormData();
+      // Awaited here rather than in accept(): someone clicking Analyze the
+      // instant the preview appears must not win a race against the encoder
+      // and quietly lose the compression.
+      if (preparing) await preparing;
+      const body = upload || picked;
+      form.append("file", body, body.name || "leaf");
+      // The API answers in the interface language. Without this it defaults to
+      // English, and an Arabic farmer would get an English treatment plan.
+      form.append("language", currentLang());
+
       const report = await call("/api/v1/analyze", { method: "POST", formData: form });
       lastReport = report;
       render(report);
@@ -364,9 +475,15 @@ export function initDiagnose({ onResult } = {}) {
       if (onResult) onResult(report);
     } catch (err) {
       // The envelope already carries a farmer-readable sentence, so it is
-      // shown verbatim rather than translated into a status code.
+      // shown verbatim rather than translated into a status code. Nothing is
+      // rendered as a verdict here: a request that failed produces no
+      // diagnosis, and inventing one would be indistinguishable from a real
+      // one on screen.
       setStatus(err && err.message ? err.message : t("st_error"), "err");
     } finally {
+      // Cleared before anything else can repaint: a stray tick landing after
+      // the outcome would overwrite it with "Analyzing…" over a result.
+      clearInterval(tick);
       setBusy(false);
     }
   }

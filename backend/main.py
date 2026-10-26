@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from agents import AgentError, ChatAgent, SupervisorAgent, Settings, get_settings
@@ -240,7 +241,20 @@ def create_app(
             raise HTTPException(status_code=413, detail=f"File too large. Maximum size is {limit_mb} MB.")
 
         try:
-            report = supervisor.run(image_bytes, filename=file.filename, declared_mime=declared, language=language)
+            # Off the event loop, for the reason the chat endpoint below is a
+            # plain ``def``: ``supervisor.run`` blocks for as long as the
+            # vision and advisory calls take. Awaiting it here would stall the
+            # loop, and EVERY request behind it — the stylesheet, the health
+            # check, the next farmer's upload — waits out this one analysis
+            # first. ``file.read()`` above still needs an ``await``, so the
+            # upload stays async and only the pipeline moves to the threadpool.
+            report = await run_in_threadpool(
+                supervisor.run,
+                image_bytes,
+                filename=file.filename,
+                declared_mime=declared,
+                language=language,
+            )
         except AgentError as exc:
             logger.error("Supervisor raised AgentError: %s", exc.message)
             return JSONResponse(status_code=KIND_TO_STATUS.get(exc.kind, 500), content={"ok": False, "error": exc.to_dict()})

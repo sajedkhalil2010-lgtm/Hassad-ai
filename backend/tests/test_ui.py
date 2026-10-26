@@ -323,6 +323,41 @@ def main() -> int:
     check("badge sits in flow, clear of the tier name",
           bool(flag_css) and "position: absolute" not in flag_css.group(1))
 
+    print("\n=== Upload preparation + honest progress ===")
+    diag = modules["diagnose.js"]
+    check("photos are re-encoded before upload",
+          "createImageBitmap" in diag and "canvas.toBlob" in diag)
+    check("the client resizes to the edge the backend keeps anyway",
+          re.search(r"MAX_UPLOAD_SIDE\s*=\s*1600", diag) is not None)
+    check("an encode can never make the upload larger",
+          "blob.size >= file.size" in diag)
+    check("EXIF orientation is applied, so re-encoding cannot rotate the leaf",
+          'imageOrientation: "from-image"' in diag)
+    check("anything that goes wrong falls back to the original file",
+          diag.count("return file") >= 4)
+    check("the encoder is awaited before the request leaves",
+          "await preparing" in diag)
+    check("the size under the preview shows what encoding saved",
+          "→" in diag and "els.previewSize" in diag)
+    # Progress is a number that keeps moving, not a label that sits still —
+    # and it has to be torn down again or it repaints the outcome away.
+    check("progress is elapsed time, not a frozen label",
+          "setInterval" in diag and "clearInterval" in diag)
+    check("the busy tone survives each tick",
+          re.search(r'setStatus\(`\$\{label\}[^)]*"busy"', diag) is not None)
+    # One definition, one call — and the call sits in the success branch of
+    # analyze(). Nothing renders an object literal, so a request that fails
+    # leaves the results panel untouched rather than filling it with a
+    # plausible verdict no model produced.
+    definitions = len(re.findall(r"function render\(", diag))
+    calls = len(re.findall(r"(?<!function )render\(report\)", diag))
+    check("a failed request produces no verdict",
+          definitions == 1 and calls == 1
+          and re.search(r"render\(\s*\{", diag) is None,
+          f"{definitions} definitions, {calls} calls")
+    check("the button label is translated in both directions",
+          't("analyze")' in diag and 't("analyze_busy")' in diag)
+
     print("\n=== bilingual coverage ===")
     # data-i18n resolves through t(), which falls back to the key itself —
     # so a key missing from one pack never throws, it renders "plan_pro_t"

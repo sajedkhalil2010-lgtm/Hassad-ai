@@ -321,6 +321,57 @@ def main() -> int:
     check("no traceback in body", "Traceback" not in http.text)
     check("no key leaked over HTTP", FAKE_KEY not in http.text)
 
+    print("\n=== I. A slow analysis must not stall the rest of the server ===")
+    # /api/v1/analyze was declared `async def` while calling the blocking
+    # pipeline directly. Inside `async def` that does not merely delay this
+    # request — it freezes the whole event loop, so the stylesheet, the health
+    # check and every other farmer's upload queue up behind whichever photo
+    # happens to be in flight. The pipeline now runs in the threadpool.
+    #
+    # Measured rather than grepped for: while a report takes a second and a
+    # half to build, an unrelated GET has to be answered in well under that,
+    # because the loop it needs is not the thread the pipeline is holding.
+    import asyncio
+    import time as _time
+
+    BLOCK_S = 1.5
+
+    class BlockingSupervisor:
+        """Stands in for the real pipeline. It blocks, the way a vision call does."""
+
+        def run(self, image_bytes, *, filename=None, declared_mime=None, language=None):
+            _time.sleep(BLOCK_S)
+            return {
+                "ok": True, "status": "confirmed", "run_id": "stub",
+                "pipeline": "supervisor_v1", "language": language or "en",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "diagnosis": {}, "advisory": None,
+                "confidence": {"overall": 0.9, "provisional": False, "threshold": 0.55},
+                "stages": [], "timing": {"total_ms": int(BLOCK_S * 1000)},
+            }
+
+    async def probe():
+        transport = httpx.ASGITransport(app=create_app(cfg, supervisor=BlockingSupervisor()))
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            t0 = _time.perf_counter()
+            pending = asyncio.create_task(c.post(
+                "/api/v1/analyze",
+                files={"file": ("leaf.png", make_png(), "image/png")},
+            ))
+            await asyncio.sleep(0.2)   # the pipeline is certainly in flight now
+            await c.get("/health")     # ...and must not have to wait for it
+            answer = _time.perf_counter() - t0
+            response = await pending
+            return answer, response.status_code
+
+    answer, status = asyncio.run(probe())
+
+    check("an unrelated request is answered while the pipeline runs",
+          answer < 0.75,
+          f"/health waited {answer:.2f}s behind a {BLOCK_S}s analysis (limit 0.75)")
+    check("the analysis itself still ran to completion", status == 200,
+          f"got {status}")
+
     print(f"\n{'='*52}\nTOTAL: {PASS} passed, {FAIL} failed\n{'='*52}")
     return 1 if FAIL else 0
 
