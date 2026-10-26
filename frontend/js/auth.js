@@ -17,7 +17,7 @@ import { call, getToken, setToken } from "./api.js";
 import { $ } from "./dom.js";
 import { t } from "./i18n.js";
 
-export function initAuth({ onChange, onGuest } = {}) {
+export function initAuth({ onChange, onGuest, onRegistered } = {}) {
   const els = {
     modal: $("auth-modal"),
     title: $("auth-modal-title"),
@@ -52,6 +52,11 @@ export function initAuth({ onChange, onGuest } = {}) {
   let user = null;
   let mode = "login";
   let lastFocused = null;
+  /* True only for the render that follows a successful registration and only
+     when something is waiting to receive it. onChange reads it so the shell
+     can hold the workspace back for one step instead of opening it the
+     instant the account exists. */
+  let pendingSignup = false;
 
   /* ----------------------------------------------------------- helpers -- */
 
@@ -117,7 +122,7 @@ export function initAuth({ onChange, onGuest } = {}) {
     els.trigger.setAttribute("aria-label", label);
     els.triggerLabel.textContent = label;
 
-    if (onChange) onChange(user);
+    if (onChange) onChange(user, { signup: pendingSignup });
   }
 
   /* -------------------------------------------------------------- open -- */
@@ -174,8 +179,17 @@ export function initAuth({ onChange, onGuest } = {}) {
       setToken(body.token);
       user = body.user;
       els.password.value = "";
+
+      // A brand-new account stops at plan selection instead of opening the
+      // workspace: `pendingSignup` marks this one transition so onChange does
+      // not route to the dashboard ahead of the step meant to precede it.
+      const signup = mode === "register" && Boolean(onRegistered);
+      pendingSignup = signup;
       render();
+      pendingSignup = false;
+
       close();
+      if (signup) onRegistered(body.user);
     } catch (err) {
       // A duplicate registration comes back 409, which is a real conflict
       // rather than bad input — offering the sign-in route is the useful move.

@@ -31,6 +31,7 @@ import { initDiagnose } from "./diagnose.js";
 import { initHistory } from "./history.js";
 import { initI18n } from "./i18n.js";
 import { initPricing } from "./pricing.js";
+import { initSubscribe } from "./subscribe.js";
 
 const body = document.body;
 
@@ -40,6 +41,7 @@ const body = document.body;
 let chatModal = null;
 let diagnose = null;
 let auth = null;
+let subscribe = null;
 let conn = null;
 let connLabel = null;
 let poller = null;
@@ -164,16 +166,24 @@ function boot() {
   // notice first renders its composed tier label.
   initPricing();
 
+  // Before initAuth: the registration hook below closes over this handle.
+  subscribe = initSubscribe({ onFinish: () => enterDashboard() });
+
   auth = initAuth({
-    onChange(user) {
+    onChange(user, meta) {
       const name = $("welcome-name");
       if (name) name.textContent = user ? (user.name || user.email) : "👤";
-      // Any real session moves the farmer off the landing page and into work.
-      if (user) enterDashboard();
+      // Any real session moves the farmer off the landing page and into work
+      // — except a brand-new one, which has a plan to choose first. The
+      // subscription step calls onFinish once that decision is made, so the
+      // workspace opens exactly once and from exactly one place.
+      if (user && !(meta && meta.signup)) enterDashboard();
     },
     // Diagnosis works without an account, so the dialog has to let people
     // past it — otherwise a tool that runs anonymously would look paywalled.
     onGuest: () => enterDashboard(),
+    // Registration hands off here instead of opening the workspace.
+    onRegistered: (user) => subscribe.open(user),
   });
 
   /* Account entry points on the landing page. */

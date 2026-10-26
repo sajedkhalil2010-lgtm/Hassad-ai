@@ -684,6 +684,123 @@ body[data-theme="light"] .ico-moon { display: none; }
   line-height: 1.65; margin-bottom: var(--sp-5);
 }
 
+/* ============================================ SUBSCRIPTION (sign-up) ==== */
+
+/* Confirms the account exists before asking what it should cost. The address
+   is set by subscribe.js, so it cannot ride in a translation pack. */
+.subscribe__who { margin: 0 0 var(--sp-3); font-size: 12.5px; color: var(--ink-3); }
+.subscribe__who span:last-child {
+  color: var(--ink); font-weight: 600;
+  unicode-bidi: plaintext;
+}
+
+/* Two stages, named rather than discovered. A lit marker is where you are; a
+   dim one behind it means the stage is done. */
+.steps {
+  display: flex; flex-wrap: wrap; gap: var(--sp-4);
+  margin: 0 0 var(--sp-4); padding: 0;
+  list-style: none; font-size: 11.5px; font-weight: 700;
+  letter-spacing: .04em; color: var(--ink-3);
+}
+.step { position: relative; padding-inline-start: 18px; }
+.step::before {
+  content: ""; position: absolute;
+  inset-inline-start: 0; inset-block-start: 4px;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--line-strong);
+}
+.step.is-active { color: var(--emerald-ink); }
+.step.is-active::before {
+  background: var(--emerald); box-shadow: 0 0 0 4px rgba(16,185,129,.18);
+}
+.step.is-done { color: var(--ink-2); }
+.step.is-done::before { background: var(--emerald); }
+
+/* Three choices as whole-card targets. The radio is hidden but stays in the
+   tab order and keeps its native semantics, so the control is announced as a
+   radio group rather than as three styled boxes. */
+.pickgroup { display: grid; gap: var(--sp-2); }
+.pickgroup__label {
+  margin: 0 0 2px; font-size: 12.5px; font-weight: 600; color: var(--ink-2);
+}
+.pick { display: block; cursor: pointer; }
+.pick__input {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; opacity: 0; pointer-events: none;
+}
+.pick__card {
+  position: relative; display: grid; gap: 5px;
+  padding: 12px 14px; padding-inline-end: 46px;
+  border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--glass);
+  transition: border-color .16s var(--ease), background .16s var(--ease);
+}
+.pick:hover .pick__card { border-color: var(--line-strong); }
+.pick__input:checked + .pick__card {
+  border-color: rgba(16,185,129,.55); background: rgba(16,185,129,.07);
+}
+.pick__input:focus-visible + .pick__card {
+  outline: 2px solid var(--emerald); outline-offset: 2px;
+}
+.pick__head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.pick__name { font-size: 14px; font-weight: 700; color: var(--ink); }
+.pick__amt {
+  margin-inline-start: auto;
+  font-size: 15px; font-weight: 800; color: var(--emerald-ink);
+  font-variant-numeric: tabular-nums;
+}
+.pick__note { font-size: 12.5px; color: var(--ink-3); line-height: 1.55; }
+/* The tick is drawn rather than shipped as a glyph, so it needs no font
+   fallback and stays crisp in both scripts. */
+.pick__card::after {
+  content: ""; position: absolute;
+  inset-inline-end: 14px; inset-block-start: 50%;
+  width: 18px; height: 18px; margin-block-start: -9px;
+  border-radius: 50%; border: 1.5px solid var(--line-strong);
+  transition: border-color .16s var(--ease), background .16s var(--ease);
+}
+.pick__input:checked + .pick__card::after {
+  border-color: var(--emerald); background: var(--emerald);
+  box-shadow: inset 0 0 0 3px var(--glass-2);
+}
+
+/* The honesty clause. A form this complete is otherwise indistinguishable
+   from one that charges money, so it says which it is before any typing. */
+.checkout__demo {
+  margin: 0 0 var(--sp-3); padding: 9px 12px;
+  border: 1px dashed rgba(251,191,36,.42); border-radius: var(--r);
+  background: rgba(251,191,36,.08);
+  font-size: 12px; line-height: 1.6; color: var(--warn);
+}
+.checkout__sum {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  margin: 0 0 var(--sp-3); font-size: 13px; color: var(--ink-2);
+}
+.checkout__sum b {
+  margin-inline-start: auto; color: var(--ink);
+  font-size: 15px; font-variant-numeric: tabular-nums;
+}
+/* auto-fit rather than a breakpoint: the pair collapses to one column at the
+   width where two fields stop being readable, with nothing to keep in sync. */
+.checkout__row { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+
+/* Fixed rather than inside the dialog: the reader is handed to the workspace
+   as it appears, so the confirmation has to outlive the panel that made it. */
+.toast {
+  position: fixed; z-index: 200;
+  inset-inline: 0; inset-block-end: 24px;
+  width: fit-content; max-width: calc(100vw - 32px);
+  margin-inline: auto; padding: 12px 22px;
+  border-radius: var(--r-pill);
+  background: var(--emerald-2); color: #04140e;
+  font-size: 13.5px; font-weight: 700; line-height: 1.5;
+  text-align: center; box-shadow: 0 14px 34px rgba(0,0,0,.5);
+  opacity: 0; visibility: hidden; transform: translateY(10px);
+  transition: opacity .22s var(--ease), transform .22s var(--ease),
+              visibility .22s;
+}
+.toast.is-on { opacity: 1; visibility: visible; transform: translateY(0); }
+
 /* ================================================ DIAGNOSTIC STUDIO ===== */
 
 .drop {

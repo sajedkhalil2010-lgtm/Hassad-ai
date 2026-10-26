@@ -15,7 +15,7 @@ FAIL = 0
 
 #: ES modules the page loads. app.js is the entry; it imports the rest.
 MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
-           "i18n.js", "history.js", "pricing.js", "app.js")
+           "i18n.js", "history.js", "pricing.js", "subscribe.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
@@ -238,10 +238,62 @@ def main() -> int:
           'id="plan-modal"' in html and '"plan-modal"' in modules["pricing.js"])
     check("notice uses the required copy",
           "early preview with free open access" in modules["i18n.js"])
-    check("no payment form anywhere",
-          not re.search(r"<form[^>]*(pay|billing|card)", html, re.I))
+    # The sign-up flow gained a payment step on purpose, so the old "no
+    # payment form anywhere" rule no longer describes the product. What that
+    # rule was protecting still has to hold, and is now asserted directly
+    # rather than inferred from an absence: the step says it is a demo where
+    # the reader can see it, and nothing in it can be posted anywhere.
+    check("payment step is labelled a demo in the markup",
+          'id="pay-form"' in html and "su_pay_demo" in html)
+    check("no form has an action to post to",
+          not re.search(r'<form[^>]*\baction\s*=', html, re.I))
     check("notice is not the only closed dialog",
           "Escape" in modules["pricing.js"])
+
+    print("\n=== Sign-up handoff (demo checkout) ===")
+    sub = modules["subscribe.js"]
+    check("subscription dialog present", 'id="su-modal"' in html)
+    check("registration is what opens it",
+          'mode === "register"' in modules["auth.js"]
+          and '"su-modal"' in sub)
+    check("sign-in still goes straight to the workspace",
+          "onRegistered" in modules["auth.js"]
+          and "signup: pendingSignup" in modules["auth.js"])
+    for ctrl in ("su-continue", "su-skip", "su-back", "su-submit"):
+        check(f"control #{ctrl} exists", f'id="{ctrl}"' in html)
+    check("all three tiers are offered", all(
+        f'value="{tier}"' in html for tier in ("free", "pro", "enterprise")))
+    check("card fields are present", all(
+        f'id="{i}"' in html for i in
+        ("pay-number", "pay-expiry", "pay-cvv", "pay-holder")))
+
+    # The property the replaced guard existed to protect: nothing typed into
+    # the card fields can leave the page. Asserted on the module directly —
+    # it pulls in no HTTP helper and names no browser request API, so there
+    # is no code path through which the digits could be transmitted.
+    check("subscription module imports no HTTP helper",
+          'from "./api.js"' not in sub)
+    check("subscription module names no browser request API",
+          not re.search(r"\b(fetch|sendBeacon|XMLHttpRequest|WebSocket)\b", sub))
+    check("card fields are cleared rather than kept",
+          'els.number.value = ""' in sub and 'els.holder.value = ""' in sub)
+    check("card fields opt out of browser autofill", all(
+        re.search(rf'id="{i}"[^>]*autocomplete="off"', html)
+        for i in ("pay-number", "pay-expiry", "pay-cvv", "pay-holder")))
+    check("the confirmation outlives the dialog that made it",
+          'id="toast"' in html and '"toast"' in sub)
+    check("either exit opens the workspace", re.search(
+        r"initSubscribe\(\{\s*onFinish:\s*\(\)\s*=>\s*enterDashboard",
+        modules["app.js"]) is not None)
+
+    # The two screens that name a price were written from different briefs
+    # and did drift — Enterprise read "Custom" on the pricing panel and "$49"
+    # at sign-up. Asserting the same figure against both keys means the next
+    # change has to be made twice on purpose, not once by accident.
+    for tier, price in (("pro", "$9"), ("ent", "$49")):
+        check(f"{tier} tier is priced the same on both surfaces",
+              f'plan_{tier}_amount: "{price}"' in modules["i18n.js"]
+              and f'su_{tier}_amt: "{price}"' in modules["i18n.js"])
 
     # A farmer has to recognise the link before they can use it, so the
     # sidebar names the section rather than only pointing at it.
@@ -297,6 +349,17 @@ def main() -> int:
     # modules must not let a guarantee quietly evaporate into a file the test
     # no longer reads.
     agg = "\n".join(modules.values())
+
+    # Keys reached only through t() in JS never appear in the markup, so the
+    # two checks above cannot see them — a typo there renders its own name in
+    # front of a farmer, and only in one of the two languages.
+    used = set(re.findall(r"\bt\(['\"]([a-z0-9_]+)['\"]\)", agg))
+    missed_ar = sorted(used - pat(ar_block))
+    missed_en = sorted(used - pat(en_block))
+    check(f"all {len(used)} keys passed to t() exist in the Arabic pack",
+          not missed_ar, str(missed_ar))
+    check(f"all {len(used)} keys passed to t() exist in the English pack",
+          not missed_en, str(missed_en))
 
     for endpoint in ("/api/v1/analyze", "/api/v1/chat",
                      "/api/register", "/api/login", "/api/logout", "/api/me"):

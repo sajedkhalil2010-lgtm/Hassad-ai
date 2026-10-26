@@ -569,8 +569,8 @@
             </header>
 
             <p class="plan__price">
-              <span class="plan__amount" data-i18n="plan_ent_amount">مخصص</span>
-              <span class="plan__per" data-i18n="plan_ent_per">حسب العقد السنوي</span>
+              <span class="plan__amount" data-i18n="plan_ent_amount">$49</span>
+              <span class="plan__per" data-i18n="plan_ent_per">شهرياً</span>
             </p>
 
             <p class="plan__desc" data-i18n="plan_ent_d">عقود موسمية مصمّمة للمزارع الكبيرة والتعاونيات الزراعية.</p>
@@ -715,6 +715,135 @@
 </div>
 
 <!-- ===================================================================== -->
+<!-- SUBSCRIPTION (sign-up step, demo)                                      -->
+<!-- Mounted straight after a registration succeeds: the account already    -->
+<!-- exists, so this is a plan decision rather than a checkout. The card    -->
+<!-- fields are a mock-up with nowhere to send anything — no network code   -->
+<!-- in subscribe.js at all — and they are cleared on every exit.            -->
+<!-- ===================================================================== -->
+<div class="modal hidden" id="su-modal" role="dialog" aria-modal="true" aria-labelledby="su-title">
+  <div class="modal__backdrop" data-close></div>
+
+  <div class="modal__panel glass glass--glow">
+
+    <header class="modal__head">
+      <h2 id="su-title">اختر خطتك</h2>
+      <button type="button" class="iconbtn" data-close aria-label="إغلاق">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6 18 18M18 6 6 18"/></svg>
+      </button>
+    </header>
+
+    <!-- Built from keys by subscribe.js rather than data-i18n: it carries an
+         address that no translation pack can supply. -->
+    <p class="subscribe__who">
+      <span data-i18n="su_account">تم إنشاء الحساب</span>
+      <span id="su-who"></span>
+    </p>
+
+    <ol class="steps">
+      <li class="step is-active" id="su-step-plan" data-i18n="su_step_plan">1 · الخطة</li>
+      <li class="step" id="su-step-pay" data-i18n="su_step_pay">2 · الدفع</li>
+    </ol>
+
+    <!-- ---------- step 1: choose ---------------------------------- -->
+    <div id="su-plan-step">
+
+      <div class="pickgroup">
+        <p class="pickgroup__label" data-i18n="su_pick">الخطة التي تريد البدء بها</p>
+
+        <label class="pick">
+          <input class="pick__input" type="radio" name="su-plan" value="free" checked>
+          <span class="pick__card">
+            <span class="pick__head">
+              <span class="pick__name" data-i18n="su_free_t">المجانية</span>
+              <span class="pick__amt" data-i18n="su_free_amt">$0</span>
+            </span>
+            <span class="pick__note" data-i18n="su_free_f">وصول أساسي بعدد محدود من الفحوصات شهرياً</span>
+          </span>
+        </label>
+
+        <label class="pick">
+          <input class="pick__input" type="radio" name="su-plan" value="pro">
+          <span class="pick__card">
+            <span class="pick__head">
+              <span class="pick__name" data-i18n="su_pro_t">برو</span>
+              <span class="pick__amt" data-i18n="su_pro_amt">$9</span>
+            </span>
+            <span class="pick__note" data-i18n="su_pro_f">فحوصات غير محدودة وتقارير ميدانية تاريخية · شهرياً</span>
+          </span>
+        </label>
+
+        <label class="pick">
+          <input class="pick__input" type="radio" name="su-plan" value="enterprise">
+          <span class="pick__card">
+            <span class="pick__head">
+              <span class="pick__name" data-i18n="su_ent_t">المؤسسات</span>
+              <span class="pick__amt" data-i18n="su_ent_amt">$49</span>
+            </span>
+            <span class="pick__note" data-i18n="su_ent_f">وصول جماعي للتعاونيات وتحليلات إقليمية · شهرياً</span>
+          </span>
+        </label>
+      </div>
+
+      <button type="button" class="btn btn--primary btn--block" id="su-continue">
+        <span class="btn__text" data-i18n="su_continue">المتابعة إلى الدفع</span>
+      </button>
+
+      <!-- The way past the whole step. Choosing it costs nothing and asks for
+           nothing, which is why it is a real route rather than a close button. -->
+      <button type="button" class="btn btn--quiet btn--block" id="su-skip">
+        <span class="btn__text" data-i18n="su_skip">تخطَّ الآن (المتابعة بالمجان)</span>
+      </button>
+    </div>
+
+    <!-- ---------- step 2: payment (mock-up) ----------------------- -->
+    <div id="su-pay-step" class="hidden">
+
+      <p class="checkout__demo" data-i18n="su_pay_demo">وضع تجريبي: لا يُخصم أي مبلغ ولا تُرسل هذه البيانات إلى أي مكان — أدخل رقماً تجريبياً فقط.</p>
+
+      <p class="checkout__sum"><span data-i18n="su_due">المطلوب</span> <b id="su-summary">—</b></p>
+
+      <form id="pay-form" novalidate>
+        <label class="field">
+          <span class="field__label" data-i18n="su_card_num">رقم البطاقة</span>
+          <input type="text" id="pay-number" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="19" placeholder="4242 4242 4242 4242">
+        </label>
+
+        <div class="checkout__row">
+          <label class="field">
+            <span class="field__label" data-i18n="su_card_exp">تاريخ الانتهاء (شهر/سنة)</span>
+            <input type="text" id="pay-expiry" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="5" placeholder="03/29">
+          </label>
+          <label class="field">
+            <span class="field__label" data-i18n="su_card_cvv">رمز الأمان CVV</span>
+            <input type="text" id="pay-cvv" inputmode="numeric" autocomplete="off" spellcheck="false" maxlength="4" placeholder="123">
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="field__label" data-i18n="su_card_holder">اسم حامل البطاقة</span>
+          <input type="text" id="pay-holder" autocomplete="off" spellcheck="false" placeholder="KHALIL SAYADA">
+        </label>
+
+        <button type="submit" class="btn btn--primary btn--block" id="su-submit">
+          <span class="btn__text" data-i18n="su_pay_cta">إتمام الاشتراك</span>
+        </button>
+      </form>
+
+      <button type="button" class="btn btn--ghost btn--block" id="su-back">
+        <span class="btn__text" data-i18n="su_back">رجوع</span>
+      </button>
+    </div>
+
+    <!-- One status line for the whole dialog rather than one per step: it
+         stays visible whichever step is showing, and sits directly under the
+         action that produced the message. -->
+    <p class="form__status" id="su-status" role="status" aria-live="polite"></p>
+
+  </div>
+</div>
+
+<!-- ===================================================================== -->
 <!-- PRICING NOTICE (demo)                                                  -->
 <!-- Shown instead of a checkout: there is no payment gateway, so "subscribe" -->
 <!-- answers with a polite note rather than pretending to take money.        -->
@@ -748,6 +877,11 @@
 </div>
 
 <noscript><p class="noscript">هذه الصفحة تحتاج JavaScript للاتصال بخلفية حصاد AI.</p></noscript>
+
+<!-- Confirmation that outlives the dialog which produced it. A fixed notice
+     rather than a status line inside the modal, because the reader is being
+     handed to the workspace and has to still see the answer there. -->
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script type="module" src="/assets/js/app.js"></script>
 

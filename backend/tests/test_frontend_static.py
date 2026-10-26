@@ -135,7 +135,8 @@ def main() -> int:
     # depends on is actually there — the import-resolution pass below then
     # proves each one resolves to a real export.
     CORE_MODULES = {"api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
-                    "i18n.js", "history.js", "pricing.js", "app.js"}
+                    "i18n.js", "history.js", "pricing.js", "subscribe.js",
+                    "app.js"}
     check("all core modules are present on disk",
           CORE_MODULES <= set(modules),
           f"missing {sorted(CORE_MODULES - set(modules))}")
@@ -215,6 +216,13 @@ def main() -> int:
         "auth-status", "auth-who", "auth-avatar", "auth-admin-view",
         "admin-output", "account-trigger", "conn", "conn-label",
         "plan-modal",
+        # Sign-up handoff: the dialog, both step regions, every control that
+        # leaves them, and the four card fields the module formats in place.
+        "su-modal", "su-title", "su-who", "su-summary",
+        "su-step-plan", "su-step-pay", "su-plan-step", "su-pay-step",
+        "su-status", "su-continue", "su-skip", "su-back",
+        "pay-form", "pay-number", "pay-expiry", "pay-cvv", "pay-holder",
+        "toast",
     }
     referenced = set()
     for src in modules.values():
