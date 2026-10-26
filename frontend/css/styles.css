@@ -600,8 +600,14 @@ body[data-theme="light"] .ico-moon { display: none; }
 .plan--featured { border-color: rgba(16,185,129,.42); background: var(--glass-2); }
 .plan--featured:hover { border-color: rgba(16,185,129,.6); }
 
+/* In normal flow, not pinned to the corner. Measured, the widest badge we
+   ship is the Arabic "الحالية / مجانية" at ~108px plus 18px of padding, and
+   the corner could only push the tier name 74px clear of it — so the badge
+   reached back over the name it sits beside. A row of its own absorbs any
+   length without a magic number, and because all three tiers now carry one
+   the cards stay aligned. */
 .plan__flag {
-  position: absolute; inset-block-start: var(--sp-4); inset-inline-end: var(--sp-4);
+  align-self: flex-start;
   font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
   padding: 3px 9px; border-radius: var(--r-pill);
   color: var(--emerald-ink); background: rgba(16,185,129,.14);
@@ -614,9 +620,6 @@ body[data-theme="light"] .ico-moon { display: none; }
 }
 
 .plan__head { display: flex; align-items: center; gap: var(--sp-3); }
-/* Reserve the corner only where an absolutely-positioned flag exists, so
-   the Free card is not indented for a badge it does not carry. */
-.plan__flag + .plan__head { padding-inline-end: 74px; }
 .plan__ico {
   display: grid; place-items: center; flex: none;
   width: 38px; height: 38px; border-radius: var(--r-sm);

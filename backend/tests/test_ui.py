@@ -228,7 +228,8 @@ def main() -> int:
         check(f"{tier} tier rendered", f'data-i18n="plan_{tier}_t"' in html)
         check(f"{tier} tier has a call to action",
               f'data-i18n="plan_{tier}_cta"' in html)
-    check("pro tier is marked coming soon", "plan_pro_badge" in html)
+    check("every tier carries a status badge",
+          all(f'data-i18n="plan_{tier}_badge"' in html for tier in ("free", "pro", "ent")))
     check("paid tiers open the notice, not a checkout",
           'data-plan="pro"' in html and 'data-plan="enterprise"' in html)
     check("free tier routes to the studio",
@@ -236,11 +237,39 @@ def main() -> int:
     check("notice dialog present and wired",
           'id="plan-modal"' in html and '"plan-modal"' in modules["pricing.js"])
     check("notice uses the required copy",
-          "early preview / free access phase" in modules["i18n.js"])
+          "early preview with free open access" in modules["i18n.js"])
     check("no payment form anywhere",
           not re.search(r"<form[^>]*(pay|billing|card)", html, re.I))
     check("notice is not the only closed dialog",
           "Escape" in modules["pricing.js"])
+
+    # A farmer has to recognise the link before they can use it, so the
+    # sidebar names the section rather than only pointing at it.
+    check("sidebar link names the section",
+          "Pricing & Business Model" in modules["i18n.js"])
+
+    # The feature lists are the terms being compared, not decoration —
+    # assert the promises that distinguish each tier are actually shipped.
+    for key, phrase in (
+        ("plan_free_badge", "Current / Free"),
+        ("plan_pro_badge", "Preview"),
+        ("plan_free_f1", "each month"),
+        ("plan_free_f2", "Sub-second"),
+        ("plan_pro_f2", "Historical field diagnostic reports"),
+        ("plan_pro_f3", "Priority cloud AI inference"),
+        ("plan_ent_f1", "Customized seasonal contracts"),
+        ("plan_ent_f2", "Multi-field monitoring"),
+        ("plan_ent_f3", "Regional data API"),
+        ("plan_ent_cta", "Contact sales"),
+    ):
+        check(f"{key} carries its promised value", phrase in modules["i18n.js"])
+
+    # The badge is absolutely positioned by default and the widest one we
+    # ship measures ~108px against a 74px corner reserve, so it would reach
+    # back over the tier name. It now occupies a row of its own.
+    flag_css = re.search(r"\.plan__flag\s*\{([^}]*)\}", css.text)
+    check("badge sits in flow, clear of the tier name",
+          bool(flag_css) and "position: absolute" not in flag_css.group(1))
 
     print("\n=== bilingual coverage ===")
     # data-i18n resolves through t(), which falls back to the key itself —
