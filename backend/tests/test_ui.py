@@ -15,7 +15,8 @@ FAIL = 0
 
 #: ES modules the page loads. app.js is the entry; it imports the rest.
 MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
-           "i18n.js", "history.js", "pricing.js", "subscribe.js", "app.js")
+           "i18n.js", "history.js", "pricing.js", "subscribe.js",
+           "record.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
@@ -345,16 +346,19 @@ def main() -> int:
           "setInterval" in diag and "clearInterval" in diag)
     check("the busy tone survives each tick",
           re.search(r'setStatus\(`\$\{label\}[^)]*"busy"', diag) is not None)
-    # One definition, one call — and the call sits in the success branch of
-    # analyze(). Nothing renders an object literal, so a request that fails
-    # leaves the results panel untouched rather than filling it with a
-    # plausible verdict no model produced.
+    # One renderer, reached from two places: the success branch of analyze()
+    # and the demo's renderSample(). Neither renders an object literal, so a
+    # request that fails still leaves the results panel untouched rather than
+    # filling it with a plausible verdict no model produced.
     definitions = len(re.findall(r"function render\(", diag))
-    calls = len(re.findall(r"(?<!function )render\(report\)", diag))
+    calls = re.findall(r"(?<!function )render\(report\)", diag)
+    sample_entry = re.search(
+        r"renderSample\(report\)\s*\{[\s\S]{0,260}?render\(report\)", diag)
     check("a failed request produces no verdict",
-          definitions == 1 and calls == 1
+          definitions == 1 and len(calls) == 2
+          and sample_entry is not None
           and re.search(r"render\(\s*\{", diag) is None,
-          f"{definitions} definitions, {calls} calls")
+          f"{definitions} definitions, {len(calls)} calls")
     check("the button label is translated in both directions",
           't("analyze")' in diag and 't("analyze_busy")' in diag)
 

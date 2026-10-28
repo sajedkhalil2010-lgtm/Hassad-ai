@@ -47,6 +47,7 @@ const STRINGS = {
     group_main: "الرئيسية", group_tools: "الأدوات",
     nav_dashboard: "لوحة التحكم", nav_studio: "استوديو التشخيص",
     nav_history: "سجل التشخيصات", nav_assistant: "المساعد الزراعي",
+    nav_record: "مسجّل العرض",
     ask_assistant: "اسأل المساعد", new_diagnosis: "تشخيص جديد",
     hi: "مرحبًا", welcome_sub: "هذه نظرة سريعة على حالة محاصيلك اليوم.",
     m_total: "إجمالي التشخيصات", m_total_d: "محفوظة على هذا الجهاز",
@@ -83,6 +84,24 @@ const STRINGS = {
     st_done: "اكتمل التحليل.", st_error: "تعذّر التحليل.",
     st_notimg: "هذا ليس ملف صورة. استعمل JPEG أو PNG أو WEBP أو BMP أو TIFF.",
     st_big: "حجم الصورة {size} — الحد الأقصى {max}.",
+
+    /* Demo recorder — it films the workspace itself. The report in the film
+       is a sample, and says so on the card. */
+    rec_t: "مسجّل العرض التجريبي",
+    rec_hint: "يُشغّل جولةً على الواجهة الحقيقية ويسجّلها في فيلم واحد — المؤشّر، الرفع، التقرير، والنطاق.",
+    rec_start: "بدء التسجيل",
+    rec_stop: "إيقاف",
+    rec_download: "تنزيل الفيديو",
+    rec_note: "التسجيل يلتقط التبويب نفسه بموافقتك، ويمسح الاستوديو قبل أن يبدأ. والتقرير الذي يظهر في الفيلم مثالٌ موسوم بـ SAMPLE وليس قراءةً من النموذج الحي.",
+    rec_ready: "جاهز — يبدأ التسجيل بعد موافقتك على مشاركة التبويب.",
+    rec_wait: "بانتظار موافقتك على مشاركة التبويب…",
+    rec_live: "جارٍ التسجيل — لا تُغيّر التبويب حتى ينتهي.",
+    rec_saved: "حُفظ الفيلم ونُزّل على جهازك.",
+    rec_cancel: "أُلغي التسجيل — لم يُحفظ شيء.",
+    rec_fail: "تعذّر التسجيل في هذا المتصفح.",
+    rec_unsupported: "هذا المتصفح لا يدعم تسجيل الفيديو ولا صيغة MP4.",
+    st_sample: "تقرير تجريبي — ليس قراءةً من النموذج الحي.",
+    badge_sample: "نموذج",
 
     /* Pricing panel — a UI demo. No payment gateway exists behind it, so
        the copy says so rather than letting a price imply a checkout. */
@@ -189,6 +208,7 @@ const STRINGS = {
     group_main: "MAIN", group_tools: "TOOLS",
     nav_dashboard: "Dashboard", nav_studio: "Diagnostic Studio",
     nav_history: "Diagnosis History", nav_assistant: "Agri Assistant",
+    nav_record: "Demo Recorder",
     ask_assistant: "Ask the assistant", new_diagnosis: "New diagnosis",
     hi: "Hi", welcome_sub: "Here is a quick look at your crop's condition today.",
     m_total: "Total diagnoses", m_total_d: "Stored on this device",
@@ -224,6 +244,24 @@ const STRINGS = {
     st_done: "Analysis complete.", st_error: "The analysis failed.",
     st_notimg: "That is not an image file. Use JPEG, PNG, WEBP, BMP or TIFF.",
     st_big: "That image is {size}. The maximum is {max}.",
+
+    /* Demo recorder — it films the workspace itself. The report in the film
+       is a sample, and says so on the card. */
+    rec_t: "Demo recorder",
+    rec_hint: "Runs a tour of the real interface and films it in one take — pointer, upload, report and scope.",
+    rec_start: "Start recording",
+    rec_stop: "Stop",
+    rec_download: "Download video",
+    rec_note: "The take captures this tab, with your permission, and clears the studio first. The report it shows is a sample, badged SAMPLE — not a live model reading.",
+    rec_ready: "Ready — recording begins once you confirm sharing this tab.",
+    rec_wait: "Waiting for you to confirm sharing this tab…",
+    rec_live: "Recording — leave this tab alone until it finishes.",
+    rec_saved: "Saved to your downloads.",
+    rec_cancel: "Recording cancelled — nothing was saved.",
+    rec_fail: "This browser could not record.",
+    rec_unsupported: "This browser supports neither video capture nor MP4.",
+    st_sample: "Sample report — not a live model reading.",
+    badge_sample: "SAMPLE",
 
     /* Pricing panel — a UI demo. No payment gateway exists behind it, so
        the copy says so rather than letting a price imply a checkout. */

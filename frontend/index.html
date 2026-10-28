@@ -240,6 +240,12 @@
         <span data-i18n="nav_assistant">المساعد الزراعي</span>
         <span class="ai-badge">AI</span>
       </button>
+      <!-- Filming rig. It watches the workspace, not the landing page, and it
+           changes nothing until somebody presses start. -->
+      <button type="button" class="snav__item" data-panel-target="recorder">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="m15.5 12 6-3.4v6.8l-6-3.4Z"/></svg>
+        <span data-i18n="nav_record">مسجّل العرض</span>
+      </button>
 
       <p class="snav__label" data-i18n="group_plan">الخدمات والاشتراكات</p>
       <!-- Pricing is a demo panel: no payment gateway behind it, so the copy
@@ -472,7 +478,43 @@
         <p class="empty glass hidden" id="history-empty" data-i18n="history_empty">لا توجد تشخيصات بعد. ابدأ من استوديو التشخيص.</p>
       </section>
 
-      <!-- ===== Pricing panel (DEMO) ================================== -->
+      <!-- ===== Demo recorder panel ==================================== -->
+    <section class="panel-view hidden" data-view-panel="recorder">
+      <header class="panel__head">
+        <div class="panel__lead">
+          <h1 class="panel__title" data-i18n="rec_t">مسجّل العرض التجريبي</h1>
+          <p class="panel__hint" data-i18n="rec_hint">يُشغّل جولةً على الواجهة الحقيقية ويسجّلها في فيلم واحد — المؤشّر، الرفع، التقرير، والنطاق.</p>
+        </div>
+      </header>
+
+      <div class="rec glass">
+        <div class="rec__row">
+          <button type="button" class="btn btn--primary" id="rec-start" data-i18n="rec_start">بدء التسجيل</button>
+          <button type="button" class="btn btn--outline hidden" id="rec-stop" data-i18n="rec_stop">إيقاف</button>
+          <span class="rec__time" id="rec-elapsed">00:00 / 00:48</span>
+        </div>
+
+        <div class="rec__track" aria-hidden="true"><span class="rec__bar" id="rec-bar"></span></div>
+
+        <p class="rec__status" id="rec-status" role="status" aria-live="polite"></p>
+
+        <div class="rec__out hidden" id="rec-out">
+          <a class="btn btn--glow" id="rec-download" href="#" download>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 4v10m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>
+            </svg>
+            <span data-i18n="rec_download">تنزيل الفيديو</span>
+          </a>
+          <p class="rec__file" id="rec-file"></p>
+          <p class="rec__facts" id="rec-facts"></p>
+        </div>
+      </div>
+
+      <p class="rec__note" data-i18n="rec_note">التسجيل يلتقط التبويب نفسه بموافقتك، ويمسح الاستوديو قبل أن يبدأ. والتقرير الذي يظهر في الفيلم مثالٌ موسوم بـ SAMPLE وليس قراءةً من النموذج الحي.</p>
+    </section>
+
+    <!-- ===== Pricing panel (DEMO) ================================== -->
       <!-- Three tiers presented as a UI preview. Nothing here charges:
            Free hands off to the studio through the ordinary panel routing,
            and the two paid tiers open a notice instead of a checkout. -->

@@ -129,6 +129,28 @@ This is what guarantees a farmer still receives a real, localized,
 correctly-translated treatment plan when the AI provider is rate-limited or
 offline. Every plan carries a safety disclaimer pointing to the DPA of Tébessa.
 
+### 🎬 Built-in Demo Recorder
+
+The **Demo Recorder** panel films the real workspace — no offscreen canvas and
+no redrawn frames — and hands back a video file. A simulated pointer glides to
+the actual controls (the studio tab, the upload dropzone, Analyze, the language
+toggle, the pricing panel) and presses them, so the take shows the product
+doing the product's job.
+
+- **Capture** — `getDisplayMedia` cropped to the workspace through Region
+  Capture, muxed by `MediaRecorder` at 24 Mbps and 60 fps.
+- **Container** — MP4/H.264 is tried first and the file is named
+  `Hassad_AI_Demo.mp4`; where the browser cannot mux MP4 the export falls back
+  to WebM and keeps the `.webm` extension rather than mislabelling the file.
+- **One click** — start, stop, and the file downloads on its own; container,
+  resolution and duration are reported under the button.
+
+Two presses are cosmetic by design: the dropzone (a real click would open a
+file dialog) and Analyze (a real click would wait on a live model). The upload
+itself is real — a real JPEG is placed on the real input — and the report it
+leads to is a sample, badged **SAMPLE** on the card, so a recording never claims
+a live model reading.
+
 ---
 
 ## 🛠️ Technology Stack

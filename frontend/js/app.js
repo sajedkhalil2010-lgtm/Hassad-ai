@@ -31,6 +31,7 @@ import { initDiagnose } from "./diagnose.js";
 import { initHistory } from "./history.js";
 import { initI18n } from "./i18n.js";
 import { initPricing } from "./pricing.js";
+import { initRecorder } from "./record.js";
 import { initSubscribe } from "./subscribe.js";
 
 const body = document.body;
@@ -161,10 +162,13 @@ function boot() {
   diagnose = initDiagnose();
   initChat({ getContext: () => diagnose.getContext() });
   initHistory();
-  initI18n();
+  const i18n = initI18n();
   // After initI18n so the stored language is already applied when the
   // notice first renders its composed tier label.
   initPricing();
+  // Last of the workspace pieces: the tour clicks real controls, so every
+  // one of them has to be wired before it can be filmed.
+  initRecorder({ diagnose, enterDashboard, i18n });
 
   // Before initAuth: the registration hook below closes over this handle.
   subscribe = initSubscribe({ onFinish: () => enterDashboard() });
