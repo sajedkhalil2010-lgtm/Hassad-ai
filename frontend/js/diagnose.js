@@ -71,10 +71,6 @@ export function initDiagnose({ onResult } = {}) {
   let busy = false;
   /** @type {object|null} Last accepted supervisor report. */
   let lastReport = null;
-  /** Whether the report on screen came from the demo rather than the model.
-   *  It is a rendering flag, not a payload field: the API contract has no
-   *  "sample" key and this module must not invent one. */
-  let lastSample = false;
 
   /* --------------------------------------------------------- status ----- */
 
@@ -309,9 +305,6 @@ export function initDiagnose({ onResult } = {}) {
     if (probable) els.badges.append(badge(t("badge_probable"), "badge badge--probable"));
     els.badges.append(badge(severity, "badge badge--sev", severity));
     if (report.status) els.badges.append(badge(report.status, "badge badge--status"));
-    // A card produced for the demo rather than by the model says so in the
-    // badge row, where the verdict is read — not in a footnote.
-    if (lastSample) els.badges.append(badge(t("badge_sample"), "badge badge--sample"));
     // Worth showing only when it explains something: a poor photo behind a
     // low-confidence read is exactly what the farmer needs told.
     if (d.image_quality && !["usable", "good"].includes(d.image_quality)) {
@@ -473,8 +466,6 @@ export function initDiagnose({ onResult } = {}) {
 
       const report = await call("/api/v1/analyze", { method: "POST", formData: form });
       lastReport = report;
-      // A live answer clears any SAMPLE marker left by the demo.
-      lastSample = false;
       render(report);
       // A compact record lands in localStorage so the dashboard's metrics and
       // recent list show real figures. Never the image, never the payload.
@@ -562,24 +553,6 @@ export function initDiagnose({ onResult } = {}) {
     /** Put the farmer back at the upload control — used by "New diagnosis". */
     focusDropzone() {
       els.dropzone.focus({ preventScroll: false });
-    },
-
-    /** Render a report the demo recorded, through the same renderer a live
-     *  answer uses, so the demo cannot drift away from the product. The card
-     *  it produces carries a SAMPLE badge for as long as it is on screen. */
-    renderSample(report) {
-      lastSample = true;
-      lastReport = report;
-      render(report);
-      setStatus(t("st_sample"), "ok");
-    },
-
-    /** Empty the studio for a fresh take: no photo, no verdict, no status. */
-    resetStudio() {
-      discard();
-      lastReport = null;
-      lastSample = false;
-      show(els.results, false);
     },
 
     /** Compact, whitelisted view of the last diagnosis, for chat context. */
