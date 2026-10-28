@@ -31,6 +31,7 @@ import { initDiagnose } from "./diagnose.js";
 import { initHistory } from "./history.js";
 import { initI18n } from "./i18n.js";
 import { initPricing } from "./pricing.js";
+import { initRecorder } from "./record.js";
 import { initSubscribe } from "./subscribe.js";
 
 const body = document.body;
@@ -42,9 +43,14 @@ let chatModal = null;
 let diagnose = null;
 let auth = null;
 let subscribe = null;
+let recorder = null;
 let conn = null;
 let connLabel = null;
 let poller = null;
+/* The address the demo recorder prints on the subscription step. Auth is the
+   only thing that knows who is signed in, and the recorder never reaches into
+   it — app.js owns the session, so app.js hands it over. */
+let sessionUser = null;
 
 /* ------------------------------------------------------------- screens -- */
 
@@ -61,6 +67,16 @@ function enterDashboard(panel = "dashboard") {
   $("app")?.classList.remove("hidden");
   showPanel(panel);
   if (first) window.scrollTo(0, 0);
+}
+
+/** The exact reverse, used only by the demo recorder. It exists as a named
+ *  function rather than as inline DOM work inside record.js because this
+ *  module owns the two-screen state — a second place poking at `body.dataset.view`
+ *  is how the two screens drift out of agreement. */
+function showLanding() {
+  body.dataset.view = "landing";
+  $("app")?.classList.add("hidden");
+  $("landing")?.classList.remove("hidden");
 }
 
 /* ------------------------------------------------------------- panels -- */
@@ -171,6 +187,7 @@ function boot() {
 
   auth = initAuth({
     onChange(user, meta) {
+      sessionUser = user;
       const name = $("welcome-name");
       if (name) name.textContent = user ? (user.name || user.email) : "👤";
       // Any real session moves the farmer off the landing page and into work
@@ -184,6 +201,17 @@ function boot() {
     onGuest: () => enterDashboard(),
     // Registration hands off here instead of opening the workspace.
     onRegistered: (user) => subscribe.open(user),
+  });
+
+  /* The demo recorder. It films this document, so it has to be told how to
+     move between screens rather than guessing: the timeline opens the landing
+     page, the studio, the pricing panel and the subscription dialog in turn,
+     and every one of those is a transition this module already owns. */
+  recorder = initRecorder({
+    goLanding: showLanding,
+    goPanel: enterDashboard,
+    getUser: () => sessionUser,
+    getSubscribe: () => subscribe,
   });
 
   /* Account entry points on the landing page. */

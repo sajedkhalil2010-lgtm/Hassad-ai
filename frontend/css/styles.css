@@ -1170,3 +1170,78 @@ body[data-theme="light"] .ico-moon { display: none; }
   body::before, .sidebar, .topbar, .chatmodal, .modal, .drop__wave { display: none !important; }
   .glass { border: 1px solid #ddd; background: #fff; box-shadow: none; backdrop-filter: none; }
 }
+
+/* ==================================================== DEMO RECORDER ====== */
+
+/* The control panel for js/record.js. It is a shooting rig rather than a
+   product feature, so it says so in plain terms: the run takes three real
+   minutes and the container depends on what the browser can mux. */
+.rec { display: grid; gap: var(--sp-4); padding: var(--sp-5); border-radius: var(--r-lg); }
+.rec .field { display: grid; gap: 6px; }
+.rec input[type="file"] {
+  padding: 10px var(--sp-3); border-radius: var(--r-sm);
+  background: var(--bg-inset); border: 1px solid var(--line); color: var(--ink-2);
+  font: inherit; font-size: 12.5px;
+}
+.rec input[type="file"]::file-selector-button {
+  margin-inline-end: var(--sp-3); padding: 7px var(--sp-3); border: 0; border-radius: var(--r-sm);
+  background: var(--glass-2); color: var(--ink); font: inherit; font-size: 12px; cursor: pointer;
+}
+.rec__file { font-size: 11.5px; color: var(--ink-3); word-break: break-all; }
+
+.rec__steps { display: grid; gap: 6px; margin: 0; padding-inline-start: var(--sp-5); }
+.rec__steps li { font-size: 12px; color: var(--ink-2); line-height: 1.65; }
+
+.rec__bar { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.rec__time {
+  margin-inline-start: auto; font-variant-numeric: tabular-nums;
+  font-size: 13px; color: var(--ink-2); letter-spacing: .04em;
+}
+
+.rec__seg { margin: 0; font-family: var(--display); font-size: 13px; color: var(--emerald-ink); }
+.rec__note { margin: 0; font-size: 11.5px; line-height: 1.7; color: var(--ink-3); }
+
+.rec__out { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
+.rec__meta { display: flex; align-items: center; gap: var(--sp-3); margin: 0; }
+.rec__size { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* The frame the timeline holds under the viewer's eye. A static outline is
+   doing the real work — the pulse is a garnish, and under
+   prefers-reduced-motion it is the only part that collapses, so the
+   highlighted element stays legible in a recording shot on a reduced
+   machine. */
+.rec-hl {
+  border-radius: var(--r-sm);
+  outline: 2px solid var(--emerald);
+  outline-offset: 6px;
+  box-shadow: 0 0 0 6px var(--glow-soft);
+  animation: recpulse 1.4s var(--ease) infinite;
+}
+@keyframes recpulse {
+  0%, 100% { box-shadow: 0 0 0 6px var(--glow-soft); }
+  50%      { box-shadow: 0 0 0 14px rgba(16, 185, 129, .06); }
+}
+
+/* ==================================================== CALL TO ACTION ====== */
+
+/* Sits under the workspace, and the closing beat of the demo scrolls to it —
+   so it is genuine page content rather than a caption composited over the
+   recording afterwards. */
+.appcta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-4); flex-wrap: wrap;
+  margin-top: var(--sp-6); padding: var(--sp-5);
+  border-top: 1px solid var(--line);
+}
+.appcta__line { margin: 0; font-family: var(--display); font-size: clamp(14px, 1.6vw, 17px); color: var(--ink); }
+.appcta__src {
+  font-size: 12.5px; color: var(--emerald-ink); text-decoration: none;
+  border-bottom: 1px solid rgba(16, 185, 129, .35); padding-bottom: 2px;
+  transition: color .16s var(--ease), border-color .16s var(--ease);
+}
+.appcta__src:hover { color: var(--ink); border-color: var(--emerald); }
+
+@media (max-width: 620px) {
+  .rec__time { margin-inline-start: 0; }
+  .appcta { justify-content: flex-start; }
+}

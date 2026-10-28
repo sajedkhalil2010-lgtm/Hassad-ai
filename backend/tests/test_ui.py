@@ -15,7 +15,8 @@ FAIL = 0
 
 #: ES modules the page loads. app.js is the entry; it imports the rest.
 MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
-           "i18n.js", "history.js", "pricing.js", "subscribe.js", "app.js")
+           "i18n.js", "history.js", "pricing.js", "subscribe.js",
+           "record.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
@@ -358,6 +359,102 @@ def main() -> int:
     check("the button label is translated in both directions",
           't("analyze")' in diag and 't("analyze_busy")' in diag)
 
+    print("\n=== demo video recorder ===")
+    rec = modules["record.js"]
+
+    # The rig is reachable from the workspace and is a real panel, not a
+    # console-only affordance the operator has to know a shortcut for.
+    check("recorder has a sidebar entry and a panel",
+          'data-panel-target="recorder"' in html
+          and 'data-view-panel="recorder"' in html)
+    check("recorder module is loaded by the page",
+          "record.js" in MODULES
+          and re.search(r'import\s*\{\s*initRecorder\s*\}\s*from\s*"\./record\.js"',
+                        modules["app.js"]) is not None)
+
+    # It films THIS document. The two screens belong to app.js, so the
+    # timeline asks app.js to move rather than re-implementing the router —
+    # a second writer on body[data-view] is how the screens drift apart.
+    check("the timeline moves the app through its own router",
+          "goLanding: showLanding" in modules["app.js"]
+          and "goPanel: enterDashboard" in modules["app.js"]
+          and "function showLanding()" in modules["app.js"])
+
+    # Capture, not synthesis. The whole honesty of the export rests on this:
+    # the browser's own surface is recorded, and no offscreen canvas ever
+    # redraws the product frame by frame.
+    check("the capture is the real tab, not a redrawn canvas",
+          "getDisplayMedia" in rec
+          and not re.search(r"captureStream|createElement\(\s*[\"']canvas", rec))
+    check("nothing is rendered by hand on camera",
+          not re.search(r"confidence\s*:|disease\s*:\s*[\"']", rec))
+    check("the verdict on camera is whatever came back",
+          "waitForResults" in rec and 'press("#analyze")' in rec)
+
+    # Container is probed, then reported. A .webm renamed .mp4 would be a
+    # small lie in the file extension and a large one in the pitch.
+    check("the container is probed rather than assumed",
+          "isTypeSupported" in rec)
+    check("mp4 is only claimed when it is really produced",
+          '.indexOf("mp4") > -1' in rec and '"MP4" : "WebM"' in rec)
+
+    # The run is clocked to exactly three minutes, and all four briefed
+    # segments are on that clock.
+    check("the sequence is exactly three minutes",
+          re.search(r"TOTAL_MS\s*=\s*180_000", rec) is not None
+          and "03:00" in html)
+    for seg in ("rec_seg1", "rec_seg2", "rec_seg3", "rec_seg4"):
+        check(f"segment {seg} is on the timeline", f'seg: "{seg}"' in rec)
+
+    # The diagnosis beat drives the genuine upload path: a real File on the
+    # real input, dispatched as a real change event. That is what makes the
+    # compression, the preview and the request on camera all true.
+    check("the sample travels the real upload path",
+          "new DataTransfer" in rec
+          and 'dispatchEvent(new Event("change"' in rec)
+    check("a run cannot begin without a real photograph",
+          "els.start.disabled = true" in rec and "!state.sample" in rec)
+
+    # Three real minutes is a property of MediaRecorder, not a policy this
+    # file could change — so it is stated where the operator can read it
+    # before committing, not discovered afterwards.
+    check("the operator is told the run costs three real minutes",
+          'data-i18n="rec_note"' in html
+          and "rec_preroll" in rec
+          and "real minutes" in modules["i18n.js"]
+          and "real time and cannot be sped up" in modules["i18n.js"])
+
+    # The permission prompt is a browser security boundary. It is explained
+    # in the panel before the operator meets it.
+    check("the sharing prompt is explained before it appears",
+          "rec_granting" in rec and 'data-i18n="rec_step1"' in html)
+
+    # Early exit has to work from anywhere, because the panel scrolls off
+    # camera for most of the run.
+    check("the run can be stopped from anywhere",
+          'event.key !== "Escape"' in rec and 'els.stop.addEventListener' in rec)
+
+    # The closing beat lands on genuine page content, so the exported file
+    # ends on the product rather than on a caption composited over it.
+    check("the closing beat lands on real page content",
+          'id="app-cta"' in html and 'to("#app-cta")' in rec)
+    check("the source link is real and opens safely",
+          'href="https://github.com/sajedkhalil2010-lgtm/Hassad-ai"' in html
+          and 'rel="noopener noreferrer"' in html)
+
+    # The recorder borrows the screen; it does not borrow the network. No
+    # code path exists through which anything could be transmitted.
+    check("the recorder transmits nothing",
+          'from "./api.js"' not in rec
+          and not re.search(r"\b(fetch|sendBeacon|XMLHttpRequest|WebSocket)\b", rec))
+
+    # The output is a file the operator collects, with its real size and its
+    # real container, and the previous take is released rather than leaked.
+    check("the finished take is offered as a download",
+          'id="rec-download"' in html and 'download>' in html
+          and "hassad-ai-demo-3min." in rec
+          and "URL.createObjectURL" in rec and "URL.revokeObjectURL" in rec)
+
     print("\n=== bilingual coverage ===")
     # data-i18n resolves through t(), which falls back to the key itself —
     # so a key missing from one pack never throws, it renders "plan_pro_t"
@@ -395,6 +492,19 @@ def main() -> int:
           not missed_ar, str(missed_ar))
     check(f"all {len(used)} keys passed to t() exist in the English pack",
           not missed_en, str(missed_en))
+
+    # The recorder names its segments and its status lines dynamically
+    # (t(beat.seg), t(state.reason === ...)), so the two checks above are
+    # blind to them — and they are exactly the strings a viewer reads for
+    # three minutes straight.
+    rec_keys = sorted(set(re.findall(r'["\']((?:rec|cta)_[a-z0-9_]+)["\']',
+                                     modules["record.js"])))
+    miss_rec_ar = [k for k in rec_keys if k not in pat(ar_block)]
+    miss_rec_en = [k for k in rec_keys if k not in pat(en_block)]
+    check(f"all {len(rec_keys)} recorder keys exist in the Arabic pack",
+          not miss_rec_ar, str(miss_rec_ar))
+    check(f"all {len(rec_keys)} recorder keys exist in the English pack",
+          not miss_rec_en, str(miss_rec_en))
 
     for endpoint in ("/api/v1/analyze", "/api/v1/chat",
                      "/api/register", "/api/login", "/api/logout", "/api/me"):
