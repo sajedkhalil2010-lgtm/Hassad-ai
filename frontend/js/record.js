@@ -17,6 +17,13 @@
  * the only kind of demo that survives being checked. If the model is slow the
  * video shows it being slow. If the model fails the video shows the failure.
  *
+ * A cinematic layer is painted on top by recordfx.js — a camera push-in,
+ * chapter wipes, a spotlight and a drawn pointer. That layer is PRESENTATION
+ * only: it changes how a shot is framed, never what the product does. The
+ * verdict on camera is still whatever the model actually returned, slow or
+ * failing included, and no frame of the interface is redrawn. The panel says
+ * so in as many words, so nobody mistakes the export for an untouched capture.
+ *
  * Two constraints no amount of code removes, so they are surfaced in the UI
  * rather than hidden:
  *   1. `MediaRecorder` captures in real time. A three-minute video takes three
@@ -32,6 +39,7 @@
 
 import { $, $all, bytes } from "./dom.js";
 import { t } from "./i18n.js";
+import { initCinema } from "./recordfx.js";
 
 /** The sequence itself. Beats are pinned to this clock so the exported file
  *  always runs 03:00, whatever the network was doing on the day it was shot. */
@@ -42,11 +50,13 @@ const TOTAL_MS = 180_000;
  *  title beat at the head of the video. */
 const PREROLL_MS = 3_000;
 
-const TICK_MS = 250;          // HUD refresh, deliberately coarse
-const CHUNK_MS = 1_000;       // MediaRecorder timeslice
-const BITRATE = 6_000_000;    // ~45 MB for three minutes, comfortable at 1080p
+const TICK_MS = 250;           // HUD refresh, deliberately coarse
+const CHUNK_MS = 1_000;        // MediaRecorder timeslice
+/** 60fps needs roughly twice the budget of 30. ~90 MB for three minutes,
+ *  which a laptop writes to disk without a stutter — dropping frames to keep
+ *  the file small would cost more than the file saves. */
+const BITRATE = 12_000_000;
 const RESULT_WAIT_MS = 45_000; // a 429 backoff can push a real scan this far
-const SCROLL_OPTS = { behavior: "smooth", block: "center" };
 
 /** Probe order matters: MP4 first so a browser that can mux it gets MP4.
  *  The extension is derived from the container rather than carried alongside
@@ -67,12 +77,6 @@ const DEMO_ACCOUNT = "demo@hassad.ai";
 /* ------------------------------------------------------------- helpers -- */
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** `$` from dom.js is getElementById. Highlight targets are often a class or
- *  a descendant selector, and handing one of those to `$` returns null — no
- *  throw, no log, just a beat that silently highlights nothing. Selector
- *  lookups go through here instead. */
-const q = (selector) => document.querySelector(selector);
 
 /** camelCase -> kebab-case, so a missing-element message can name the id
  *  that is actually in the markup rather than the key it is stored under. */
@@ -116,7 +120,12 @@ export function initRecorder(opts = {}) {
     out: $("rec-out"),
     outSize: $("rec-out-size"),
     outFormat: $("rec-out-format"),
+    outFps: $("rec-fps"),
   };
+
+  /** The camera, the pointer and the transitions. Everything it does is a
+   *  framing decision layered over the real interface — see recordfx.js. */
+  const fx = initCinema();
 
   const absent = Object.keys(els).filter((key) => !els[key]);
   if (absent.length) {
@@ -150,34 +159,57 @@ export function initRecorder(opts = {}) {
     els.status.textContent = text;
   }
 
+  /** Reads back what the capture actually committed to. The browser is free
+   *  to deliver fewer frames than were asked for, and the operator deserves
+   *  the real number rather than the requested one. */
+  function reportFps(stream) {
+    if (!els.outFps) return;
+    const [track] = stream.getVideoTracks();
+    const got = track && typeof track.getSettings === "function"
+      ? Math.round(track.getSettings().frameRate || 0)
+      : 0;
+    els.outFps.textContent = got ? `${got} fps` : "—";
+  }
+
+  /** Removes the edge from the last subject and drops the spotlight. The
+   *  outline is not decoration: at 1.45x on a dimmed surround it is what
+   *  still tells a viewer which of three similar cards is being discussed. */
   function clearHl() {
     if (state.hl) state.hl.classList.remove("rec-hl");
     state.hl = null;
     if (state.hlTimer) clearTimeout(state.hlTimer);
     state.hlTimer = null;
+    fx.clearSpotlight();
   }
 
-  /** One framed element at a time, so the eye always knows where to look. */
-  function hl(node, ms = 4000) {
-    if (!node) return;
+  /** One framed subject at a time: centre it, push in, glide the pointer onto
+   *  it, then hold. Replaces the old scroll-then-outline helper — framing and
+   *  emphasis are the same decision now, so they are one call. */
+  function hl(target, ms = 4000, opts = {}) {
     clearHl();
-    node.classList.add("rec-hl");
-    state.hl = node;
-    state.hlTimer = setTimeout(clearHl, ms);
+    return fx.focus(target, {
+      zoom: opts.zoom ?? fx.ZOOM_MID,
+      overlay: Boolean(opts.overlay),
+      hold: ms,
+      onLand: (el) => {
+        el.classList.add("rec-hl");
+        state.hl = el;
+        state.hlTimer = setTimeout(clearHl, ms);
+      },
+    });
   }
 
-  function hlAt(selector, index, ms) {
-    hl($all(selector)[index] || null, ms);
+  /** The n-th card of a set — the pricing tiers all share a class, so an
+   *  index is the only stable name for one of them. */
+  function hlAt(selector, index, ms, opts = {}) {
+    return hl($all(selector)[index] || null, ms, opts);
   }
 
-  function to(selector) {
-    const node = document.querySelector(selector);
-    if (node) node.scrollIntoView(SCROLL_OPTS);
-  }
-
-  function press(selector) {
-    const node = document.querySelector(selector);
-    if (node) node.click();
+  /** Glide to a control and actually press it. `real: false` is the drawn
+   *  version, used where a genuine click would derail the automation — the
+   *  dropzone above all, whose only response to a click is a file picker. */
+  function press(selector, opts = {}) {
+    return fx.tap(selector, { real: opts.real !== false, hold: opts.hold ?? 420 });
   }
 
   /* ------------------------------------------------------------ timeline */
@@ -231,10 +263,14 @@ export function initRecorder(opts = {}) {
     });
   }
 
+  /** Presses the app's own toggle, so the RTL/LTR change on camera is the
+   *  real one — including the verdict re-render it triggers. */
   function flipLanguage() {
-    press("#app [data-lang-toggle]");
+    return press("#app [data-lang-toggle]", { hold: 400 });
   }
 
+  /** The genuine dialog, opened through the same call registration hands off
+   *  to. Only the identity in the address slot is a disclosed placeholder. */
   function openSubscription() {
     const handle = nav.getSubscribe();
     if (!handle || typeof handle.open !== "function") return;
@@ -242,71 +278,151 @@ export function initRecorder(opts = {}) {
     handle.open(user || { email: DEMO_ACCOUNT });
   }
 
-  function closeSubscription() {
-    const handle = nav.getSubscribe();
-    if (handle && typeof handle.close === "function") handle.close();
-  }
-
   /** The whole 180 seconds, as absolute times. Four segments, matching the
    *  brief: opening problem statement, live diagnosis, plans, call to action. */
   function beats() {
     return [
       /* ---- 0:00–0:45 · the problem, and the header that answers it ---- */
-      { at: 0, seg: "rec_seg1", run: async () => { nav.goLanding(); to("#main"); } },
-      { at: 4_500, seg: "rec_seg1", run: async () => hl(q(".hero__title"), 5000) },
-      { at: 10_000, seg: "rec_seg1", run: async () => hl(q(".hero__sub"), 5000) },
-      { at: 16_000, seg: "rec_seg1", run: async () => { to("#how"); await wait(2500); hl(q(".steps"), 4000); } },
-      { at: 24_000, seg: "rec_seg1", run: async () => to("#modules") },
-      { at: 29_000, seg: "rec_seg1", run: async () => to("#why") },
-      { at: 34_000, seg: "rec_seg1", run: async () => { to("#main"); await wait(2000); hl(q("#landing .brand"), 5000); } },
-
-      /* ---- 0:45–1:45 · a real photograph, a real diagnosis ---- */
-      { at: 45_000, seg: "rec_seg2", run: async () => { nav.goPanel("studio"); await wait(1500); } },
-      { at: 47_500, seg: "rec_seg2", run: async () => { to("#dropzone"); await wait(2000); } },
-      { at: 50_000, seg: "rec_seg2", run: async () => { loadSample(); await wait(3500); hl($("preview-wrap"), 3000); } },
-      { at: 56_000, seg: "rec_seg2", run: async () => { to("#analyze"); await wait(1500); hl($("analyze"), 2500); } },
       {
-        at: 58_000,
-        seg: "rec_seg2",
+        at: 0,
+        seg: "rec_seg1",
         run: async () => {
-          // The real request. Whatever comes back is what gets filmed.
-          press("#analyze");
-          const ok = await waitForResults(RESULT_WAIT_MS);
-          if (!ok) return; // the interface is already showing the real outcome
-          await wait(4000);
-          to("#results");
-          await wait(2500);
-          hl($("summary"), 6000);
-          await wait(7000);
-          hl($("badges"), 4000);
+          // The opening dissolve covers the swap from the recorder panel to
+          // the landing page, so the file never contains a frame of the
+          // filming rig. The reset happens under it, and the chapter opens
+          // wide before pushing in on its first subject.
+          await fx.wipe("dissolve", () => { fx.reset(); nav.goLanding(); });
+          await hl("#main .hero__title", 3500, { zoom: fx.ZOOM_MID });
         },
       },
-      { at: 88_000, seg: "rec_seg2", run: async () => { to("#results"); await wait(1500); hl($("summary"), 4000); } },
-      { at: 93_000, seg: "rec_seg2", run: async () => hl($("verdict-ar"), 4000) },
-      // Flip away, read the verdict in the other script, flip back. This is the
-      // RTL/LTR demonstration, and it uses the app's own toggle.
-      { at: 96_000, seg: "rec_seg2", run: async () => { flipLanguage(); await wait(2500); } },
-      { at: 98_500, seg: "rec_seg2", run: async () => { to("#results"); await wait(2000); hl($("summary"), 5000); } },
-      { at: 104_000, seg: "rec_seg2", run: async () => flipLanguage() },
+      { at: 6_000, seg: "rec_seg1", run: () => hl(".hero__sub", 3000) },
+      { at: 11_500, seg: "rec_seg1", run: () => hl(".steps", 3000, { zoom: fx.ZOOM_WIDE }) },
+      { at: 17_000, seg: "rec_seg1", run: () => hl("#modules .lgrid", 2800, { zoom: fx.ZOOM_WIDE }) },
+      { at: 22_500, seg: "rec_seg1", run: () => hl("#why .lgrid", 2800, { zoom: fx.ZOOM_WIDE }) },
+      { at: 28_000, seg: "rec_seg1", run: () => hl("#landing .brand", 4500, { zoom: fx.ZOOM_TIGHT }) },
+      // Pull back to the whole hero and breathe before the chapter turns.
+      { at: 34_500, seg: "rec_seg1", run: () => hl("#main .hero__copy", 4000, { zoom: fx.ZOOM_WIDE }) },
+      { at: 41_000, seg: "rec_seg1", run: () => fx.wander(3600) },
+
+      /* ---- 0:45–1:45 · a real photograph, a real diagnosis ---- */
+      {
+        at: 45_000,
+        seg: "rec_seg2",
+        run: async () => {
+          await fx.wipe("sweep", () => { fx.reset(); nav.goPanel("studio"); });
+          await hl("#dropzone", 4000, { zoom: fx.ZOOM_MID });
+        },
+      },
+      // Drawn only. A real click here would open a file picker over the
+      // recording and stall the automation — this is the one place the
+      // pointer's gesture and the product's behaviour are deliberately apart,
+      // and the photograph is loaded through the real input immediately after.
+      { at: 51_000, seg: "rec_seg2", run: () => press("#dropzone", { real: false, hold: 900 }) },
+      {
+        at: 52_500,
+        seg: "rec_seg2",
+        run: async () => {
+          loadSample();
+          await hl("#preview-wrap", 4000, { zoom: fx.ZOOM_MID });
+        },
+      },
+      { at: 59_000, seg: "rec_seg2", run: () => hl("#analyze", 2500, { zoom: fx.ZOOM_TIGHT }) },
+      {
+        at: 63_000,
+        seg: "rec_seg2",
+        run: async () => {
+          // The real request. Whatever comes back — fast, slow or a failure —
+          // is what gets filmed. The pointer wanders so the frame is not
+          // dead, and stops the instant the answer lands: no padding, no cut.
+          await press("#analyze", { real: true, hold: 400 });
+          const ok = await fx.wanderUntil(waitForResults(RESULT_WAIT_MS));
+          if (!ok) return; // the interface is already showing the real outcome
+          await hl("#summary", 5000, { zoom: fx.ZOOM_TIGHT });
+        },
+      },
+      { at: 78_000, seg: "rec_seg2", run: () => hl("#badges", 3000) },
+      { at: 83_000, seg: "rec_seg2", run: () => hl("#verdict-ar", 3000, { zoom: fx.ZOOM_TIGHT }) },
+      // Flip away and back. The wipe covers the re-render, which otherwise
+      // reads as a glitch rather than as the same verdict in another script.
+      {
+        at: 88_500,
+        seg: "rec_seg2",
+        run: async () => {
+          // The pointer glides onto the app's own toggle first, so the
+          // gesture is on screen; the flip itself then happens at the
+          // dissolve's peak. The re-render it triggers would otherwise read
+          // as a glitch rather than as the same verdict in another script.
+          await fx.tap("#app [data-lang-toggle]", { real: false, hold: 320 });
+          await fx.wipe("dissolve", flipLanguage);
+        },
+      },
+      { at: 92_000, seg: "rec_seg2", run: () => hl("#summary", 3500) },
+      {
+        at: 98_000,
+        seg: "rec_seg2",
+        run: async () => {
+          // Same again on the way back, so the toggle is visibly the one
+          // control responsible for both readings of the verdict.
+          await fx.tap("#app [data-lang-toggle]", { real: false, hold: 320 });
+          await fx.wipe("dissolve", flipLanguage);
+        },
+      },
+      { at: 101_500, seg: "rec_seg2", run: () => fx.wander(3200) },
 
       /* ---- 1:45–2:30 · the plans, and the subscription dialog ---- */
-      { at: 106_000, seg: "rec_seg3", run: async () => { nav.goPanel("pricing"); await wait(1500); to(".plans"); } },
-      { at: 111_000, seg: "rec_seg3", run: async () => hlAt(".plans .plan", 0, 5000) },
-      { at: 117_000, seg: "rec_seg3", run: async () => hlAt(".plans .plan", 1, 5000) },
-      { at: 123_000, seg: "rec_seg3", run: async () => hlAt(".plans .plan", 2, 5000) },
-      { at: 129_000, seg: "rec_seg3", run: async () => hl(q(".pricing-note"), 4000) },
-      { at: 134_000, seg: "rec_seg3", run: async () => { openSubscription(); await wait(3000); } },
-      { at: 138_000, seg: "rec_seg3", run: async () => hl(q("#su-modal .modal__panel"), 6000) },
+      {
+        at: 105_000,
+        seg: "rec_seg3",
+        run: async () => {
+          await fx.wipe("sweep", () => { fx.reset(); nav.goPanel("pricing"); });
+          await hl(".plans", 3800, { zoom: fx.ZOOM_WIDE });
+        },
+      },
+      { at: 111_500, seg: "rec_seg3", run: () => hlAt(".plans .plan", 0, 3800) },
+      { at: 118_000, seg: "rec_seg3", run: () => hlAt(".plans .plan", 1, 3800) },
+      { at: 124_500, seg: "rec_seg3", run: () => hlAt(".plans .plan", 2, 3800) },
+      { at: 131_000, seg: "rec_seg3", run: () => hl(".pricing-note", 3000, { zoom: fx.ZOOM_WIDE }) },
+      {
+        at: 136_500,
+        seg: "rec_seg3",
+        run: async () => {
+          // The dialog is opened by the same call registration hands off to.
+          // Note what does NOT happen: the pointer does not pre-position on a
+          // plan button, because clicking one opens the preview notice rather
+          // than this dialog — implying otherwise is exactly the fabrication
+          // this recorder exists to avoid. The modal arrives under the wipe
+          // and the pointer glides into it afterwards.
+          await fx.wipe("dissolve", () => { fx.reset(); openSubscription(); });
+          await hl("#su-modal .modal__panel", 4000, { zoom: fx.ZOOM_MID, overlay: true });
+        },
+      },
       // The checkout fields are filmed on purpose — they carry their own
       // "nothing is charged" banner, so the video shows the demo as a demo.
-      { at: 145_000, seg: "rec_seg3", run: async () => hl($("pay-form"), 6000) },
+      { at: 144_000, seg: "rec_seg3", run: () => hl("#pay-form", 4000, { zoom: fx.ZOOM_TIGHT, overlay: true }) },
 
       /* ---- 2:30–3:00 · the call to action ---- */
-      { at: 152_000, seg: "rec_seg4", run: async () => { closeSubscription(); await wait(2500); } },
-      { at: 155_000, seg: "rec_seg4", run: async () => { nav.goPanel("dashboard"); await wait(1500); to("#app-cta"); } },
-      { at: 160_000, seg: "rec_seg4", run: async () => hl($("app-cta"), 6000) },
-      { at: 167_000, seg: "rec_seg4", run: async () => hl(q("#app-cta a"), 7000) },
-      { at: 175_000, seg: "rec_seg4", run: async () => hl(q("#app .brand"), 4000) },
+      {
+        at: 150_500,
+        seg: "rec_seg4",
+        run: async () => {
+          // The pointer travels to the dialog's own close button while the
+          // veil is still down, so the gesture is legible. The wipe then
+          // rises, and the press lands at its peak — under cover. Closing
+          // first would expose the jump straight back to the pricing panel
+          // for a third of a second.
+          await fx.tap("#su-modal .modal__head [data-close]", { real: false, hold: 380 });
+          await fx.wipe("sweep", () => {
+            fx.reset();
+            press("#su-modal .modal__head [data-close]", { real: true, hold: 0 });
+            nav.goPanel("dashboard");
+          });
+          await hl("#app-cta", 4500, { zoom: fx.ZOOM_MID });
+        },
+      },
+      { at: 160_000, seg: "rec_seg4", run: () => hl("#app-cta a", 5000, { zoom: fx.ZOOM_TIGHT }) },
+      { at: 166_500, seg: "rec_seg4", run: () => hl("#app .brand", 4000, { zoom: fx.ZOOM_WIDE }) },
+      // Ends on the call to action and the repository link, in frame, still.
+      { at: 172_000, seg: "rec_seg4", run: () => hl("#app-cta", 6000, { zoom: fx.ZOOM_MID }) },
     ];
   }
 
@@ -380,6 +496,10 @@ export function initRecorder(opts = {}) {
     if (state.capTimer) { clearTimeout(state.capTimer); state.capTimer = null; }
     if (state.poller) { clearInterval(state.poller); state.poller = null; }
     clearHl();
+    // The camera, the pointer and the overlays come down with the recording.
+    // Leaving a scale() on #app would be a bug the operator sees on their
+    // next ordinary session, long after the file was exported.
+    fx.end();
 
     setStatus(t("rec_finalising"));
     for (const track of state.stream ? state.stream.getTracks() : []) track.stop();
@@ -417,7 +537,10 @@ export function initRecorder(opts = {}) {
     let stream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 60 } },
+        // 60 is requested, not assumed. What the tab actually delivers is
+        // read back off the track and shown in the output panel — a claim of
+        // "60fps" that the capture did not honour would be a lie in the file.
+        video: { frameRate: { ideal: 60, max: 60 } },
         audio: false,
       });
     } catch {
@@ -446,6 +569,7 @@ export function initRecorder(opts = {}) {
     state.recorder.start(CHUNK_MS);
     state.running = true;
     state.startedAt = Date.now();
+    reportFps(stream);
 
     els.out.classList.add("hidden");
     els.start.classList.add("hidden");
@@ -453,6 +577,7 @@ export function initRecorder(opts = {}) {
     tick();
     state.ticker = setInterval(tick, TICK_MS);
     state.capTimer = setTimeout(() => finish("auto"), TOTAL_MS);
+    fx.begin();
 
     // The permission prompt may have parked the pointer mid-canvas. Get a
     // clean, still opening frame before the clock starts.

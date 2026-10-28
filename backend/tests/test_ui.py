@@ -16,7 +16,7 @@ FAIL = 0
 #: ES modules the page loads. app.js is the entry; it imports the rest.
 MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
            "i18n.js", "history.js", "pricing.js", "subscribe.js",
-           "record.js", "app.js")
+           "record.js", "recordfx.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
@@ -389,7 +389,8 @@ def main() -> int:
     check("nothing is rendered by hand on camera",
           not re.search(r"confidence\s*:|disease\s*:\s*[\"']", rec))
     check("the verdict on camera is whatever came back",
-          "waitForResults" in rec and 'press("#analyze")' in rec)
+          "waitForResults(RESULT_WAIT_MS)" in rec
+          and 'press("#analyze", { real: true' in rec)
 
     # Container is probed, then reported. A .webm renamed .mp4 would be a
     # small lie in the file extension and a large one in the pitch.
@@ -435,9 +436,13 @@ def main() -> int:
           'event.key !== "Escape"' in rec and 'els.stop.addEventListener' in rec)
 
     # The closing beat lands on genuine page content, so the exported file
-    # ends on the product rather than on a caption composited over it.
+    # ends on the product rather than on a caption composited over it. It is
+    # framed, not just scrolled to — the last shot of a three-minute take is
+    # the one people remember.
     check("the closing beat lands on real page content",
-          'id="app-cta"' in html and 'to("#app-cta")' in rec)
+          'id="app-cta"' in html
+          and 'hl("#app-cta", 6000' in rec
+          and 'hl("#app-cta a", 5000' in rec)
     check("the source link is real and opens safely",
           'href="https://github.com/sajedkhalil2010-lgtm/Hassad-ai"' in html
           and 'rel="noopener noreferrer"' in html)
@@ -454,6 +459,148 @@ def main() -> int:
           'id="rec-download"' in html and 'download>' in html
           and "hassad-ai-demo-3min." in rec
           and "URL.createObjectURL" in rec and "URL.revokeObjectURL" in rec)
+
+    print("\n=== cinematic layer (camera, transitions, pointer) ===")
+    fx = modules["recordfx.js"]
+
+    check("the cinematic layer is loaded and driven by the recorder",
+          "recordfx.js" in MODULES
+          and re.search(r'import\s*\{\s*initCinema\s*\}\s*from\s*"\./recordfx\.js"',
+                        rec) is not None
+          and "initCinema()" in rec and "fx.begin()" in rec and "fx.end()" in rec)
+
+    # The camera is a transform on the page that is already being recorded, so
+    # a zoom in the export is a genuine camera move over genuine pixels. An
+    # offscreen canvas would instead be redrawing the product, which is the
+    # line the recorder has held since it was first built.
+    check("the camera transforms the real page, it does not redraw it",
+          "transformOrigin" in fx and "scale(" in fx
+          and not re.search(r"captureStream|createElement\(\s*[\"']canvas", fx))
+    check("the pointer is drawn, never recorded",
+          "recursor" in fx and "translate3d" in fx
+          and "requestAnimationFrame" in fx)
+
+    # The arrival point is projected from the scale the rect was MEASURED
+    # under. Inverting with the destination instead would put the pointer in
+    # the wrong place exactly when the push-in is largest — which is most of
+    # the video, and is invisible to every other check here.
+    check("the pointer is aimed with the scale it was measured under",
+          "const fromZoom = live.zoom;" in fx
+          and "applyZoom(zoom, layers);" in fx
+          and re.search(r"finalCenter\(node,\s*zoom,\s*fromZoom\)", fx) is not None
+          and re.search(r"finalCenter\(node,\s*zoom\)\s*{", fx) is None)
+
+    # Framing must never become layout. A width, height, top or left write
+    # forces the browser to re-run layout and paint on every animation frame,
+    # which is precisely what would drop a 60fps capture to 30.
+    check("every camera animation is compositor work only",
+          not re.search(r"\.style\.(width|height|top|left|right|bottom|background|margin|padding)\b", fx),
+          "layout-forcing style write found")
+
+    # The distinction that keeps this honest. `tap` only activates a control
+    # when a beat explicitly asks for it, so the drawn gesture can never
+    # silently become a real one.
+    check("a drawn gesture never activates anything by itself",
+          re.search(r"function tap\([^)]*\)\s*{", fx) is not None
+          and "if (opts.real) node.click();" in fx)
+    check("the dropzone gesture is drawn, not real",
+          'press("#dropzone", { real: false' in rec)
+    check("the controls that should activate, still do",
+          'press("#analyze", { real: true' in rec
+          and 'press("#app [data-lang-toggle]", { hold: 400 })' in rec
+          and 'press("#su-modal .modal__head [data-close]", { real: true' in rec)
+
+    # The model wait is the one stretch nobody can time. It must be neither
+    # padded nor cut — the pointer wanders until the real answer lands.
+    check("the model wait is neither padded nor cut",
+          "wanderUntil(waitForResults(RESULT_WAIT_MS))" in rec)
+
+    # Scroll is computed from layout (offsetTop), which no transform can
+    # move. getBoundingClientRect would report the camera's own output back
+    # to the camera, and the two would drift apart.
+    check("scroll is measured from layout, not from the transformed box",
+          "function docTop(node)" in fx and "offsetTop" in fx
+          and "scrollIntoView" not in rec)
+    check("a subject centred in frame stays centred while it is magnified",
+          "50% ${Math.round(window.scrollY + window.innerHeight / 2)}px" in fx)
+
+    # The rate is requested and then read back. Claiming 60 in the file when
+    # the browser committed 34 would be a lie the operator can disprove.
+    check("60fps is requested, and the real rate is read back",
+          "ideal: 60" in rec and "getSettings()" in rec
+          and 'id="rec-fps"' in html and "rec_fps" in modules["i18n.js"])
+    check("the bitrate was raised to carry 60 frames a second",
+          re.search(r"BITRATE\s*=\s*12_000_000", rec) is not None)
+
+    # The camera comes down again. A scale left on #app would be a bug the
+    # operator met in their next ordinary session, long after the export.
+    check("the camera is removed again when the take ends",
+          re.search(r"layer\.style\.transform = \"\";?\s*\n\s*layer\.style\.transformOrigin", fx) is not None
+          and "document.body.classList.remove" in fx)
+
+    # Chapter changes must reach the file as a transition rather than as a
+    # hard cut, and the screenswap has to happen UNDER the wipe — not before
+    # it rises, and not after it has faded. Parsed with balanced parens and
+    # quote awareness, because matching an expression shape would only ever
+    # assert the shape: an inner `{ real: true }` object is enough to break it.
+    def wipe_calls(source, name="fx.wipe"):
+        """The full argument list of every `name(...)` call, parsed."""
+        out = []
+        for m in re.finditer(re.escape(name) + r"\(", source):
+            depth, quote, i = 0, "", m.end() - 1
+            while i < len(source):
+                ch = source[i]
+                if quote:
+                    if ch == "\\":
+                        i += 2
+                        continue
+                    if ch == quote:
+                        quote = ""
+                elif ch in "\"'`":
+                    quote = ch
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        out.append(source[m.end():i])
+                        break
+                i += 1
+        return out
+
+    wipes = wipe_calls(rec)
+    swaps = [c for c in wipes if re.search(r"nav\.go(Landing|Panel)", c)]
+    check("each chapter changes under cover of a transition",
+          len(swaps) >= 4 and len(wipes) >= len(swaps),
+          f"{len(swaps)} of {len(wipes)} wipes carry a screen swap")
+    # Each of those openings starts from a neutral framing. Cutting from a
+    # 1.62x close-up straight into the next chapter would leave the move
+    # half-finished on the first frame of the new one.
+    check("each chapter opens wide rather than mid-push",
+          rec.count("fx.reset()") >= 4,
+          f"resets={rec.count('fx.reset()')}")
+
+    # The overlays must not eat the operator's clicks, and must sit above the
+    # dialogs they are framing.
+    veil = re.search(r"\.rec-veil\s*\{([^}]*)\}", css.text)
+    check("the overlays never intercept a click",
+          bool(veil) and "pointer-events: none" in veil.group(1))
+    check("the pointer draws above the dialogs",
+          bool(veil) and "z-index: 150" in veil.group(1)
+          and "z-index: 200" in css.text and "z-index: 160" in css.text)
+
+    # The operator's real pointer would otherwise appear beside the drawn one
+    # and give away that nobody is driving.
+    check("the real pointer is hidden for the duration of the take",
+          "body.is-recording" in css.text and "cursor: none" in css.text
+          and "is-recording" in fx)
+
+    # Every class the layer applies has to have a rule. The generic scan
+    # cannot see classes built inside template literals, so these are pinned
+    # explicitly.
+    for cls in ("rec-veil", "rec-wipe", "rec-wipe--sweep", "recursor",
+                "recursor__ptr", "recursor__ripple", "rec-tap", "rec-hl"):
+        check(f".{cls} is styled", f".{cls}" in css.text)
 
     print("\n=== bilingual coverage ===")
     # data-i18n resolves through t(), which falls back to the key itself —

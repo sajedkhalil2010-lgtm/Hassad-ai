@@ -648,11 +648,20 @@
             </a>
             <p class="rec__meta">
               <span class="pill pill--check"><i class="pill__dot"></i><span id="rec-out-format">MP4</span></span>
+              <!-- Read back off the capture track, not copied from what was
+                   requested: the browser may commit fewer frames than asked. -->
+              <span class="pill pill--check"><i class="pill__dot"></i><span data-i18n="rec_fps">إطار/ثانية</span> <span id="rec-fps">—</span></span>
               <span class="rec__size" id="rec-out-size">—</span>
             </p>
           </div>
 
           <p class="rec__note" data-i18n="rec_note">يحتاج التسجيل إلى ثلاث دقائق حقيقية — التسجيل يحدث بالزمن الحقيقي ولا يمكن تسريعه. يُصدَّر MP4 إذا كان المتصفح يدعمه، وإلا WebM.</p>
+
+          <!-- Disclosed plainly: the camera moves, the wipes and the pointer
+               are drawn on top of a genuine run. They change how a shot is
+               framed, never what the product does — so nobody takes the
+               export for an untouched capture. -->
+          <p class="rec__note" data-i18n="rec_fx">طبقة سينمائية فوق التسجيل: تكبير وتموضع للكاميرا، انتقالات بين الفصول، ومؤشر فأرة مرسوم ينزلق بين الأزرار. هي عرض تقديمي فقط — لا تغيّر ما يفعله المنتج، والتشخيص على الشاشة هو نتيجة النموذج الحقيقية، بطيئة كانت أو فاشلة.</p>
         </div>
       </section>
 
