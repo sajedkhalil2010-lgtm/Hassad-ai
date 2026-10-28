@@ -216,6 +216,11 @@ Visit **<http://127.0.0.1:8000>** — the Arabic-first dashboard loads directly,
 no build step required. Drag a leaf photo onto the dropzone and press
 **Analyse**.
 
+The standalone presentation page is at **<http://127.0.0.1:8000/trailer>**. It
+is a self-contained forty-second piece — it loads none of the application's
+modules and talks to no API, so it can be opened on a projector without the
+workspace's state anywhere near it.
+
 ---
 
 ## 🔌 API Reference
@@ -223,6 +228,7 @@ no build step required. Drag a leaf photo onto the dropzone and press
 | Method | Endpoint | Description |
 | --- | --- | --- |
 | `GET` | `/health` | System verification — models, provider, key state (masked). **Never leaks the key.** |
+| `GET` | `/trailer` | The standalone cinematic presentation page. No application state, no API calls. |
 | `POST` | `/api/v1/analyze` | Upload a leaf image → full supervisor report. Accepts `language`. |
 | `POST` | `/api/v1/chat` | One conversational turn, with optional diagnosis context. |
 | `POST` | `/api/register` | Create an account → session token. `200` on success. |

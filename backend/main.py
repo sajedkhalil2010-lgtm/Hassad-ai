@@ -45,6 +45,7 @@ from auth import AuthStore, build_auth_router
 #: where uvicorn was started from.
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 INDEX_HTML = FRONTEND_DIR / "index.html"
+TRAILER_HTML = FRONTEND_DIR / "trailer.html"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -192,6 +193,17 @@ def create_app(
         if not INDEX_HTML.is_file():
             raise HTTPException(status_code=404, detail="Test UI not found (frontend/index.html).")
         return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
+
+    # A standalone presentation page, deliberately outside the product: it loads
+    # none of the app's modules and talks to no API. Kept on its own path so it
+    # can be opened on a projector without the workspace's state anywhere near
+    # it. The page itself also resolves at /assets/trailer.html via the mount.
+    @app.get("/trailer", include_in_schema=False)
+    def trailer() -> FileResponse:
+        """Serve the self-contained cinematic trailer page."""
+        if not TRAILER_HTML.is_file():
+            raise HTTPException(status_code=404, detail="Trailer not found (frontend/trailer.html).")
+        return FileResponse(TRAILER_HTML, media_type="text/html; charset=utf-8")
 
     @app.get("/health", tags=["system"])
     def health() -> dict[str, Any]:
