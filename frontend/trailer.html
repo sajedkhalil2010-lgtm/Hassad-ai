@@ -242,26 +242,45 @@
         <h1 class="poster__title">Hassad <span>AI</span></h1>
         <p class="poster__sub">Crop diagnosis for every farmer.</p>
 
-        <button class="playbtn" id="play" type="button">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5Z"/></svg>
-          <span>Play Cinematic Trailer</span>
-        </button>
+        <div class="poster__actions">
+          <button class="playbtn" id="play" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5Z"/></svg>
+            <span>Play Cinematic Trailer</span>
+          </button>
+
+          <button class="playbtn playbtn--ghost" id="export" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 18v1a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1"/></svg>
+            <span>Generate &amp; Download 4K MP4 Trailer</span>
+          </button>
+        </div>
 
         <p class="poster__meta">40 seconds · <span id="res">—</span> · English</p>
+
+        <!-- What this machine can actually produce, read from the browser
+             rather than promised in advance. -->
+        <p class="export__spec" id="export-spec" role="status" aria-live="polite">Checking capture support…</p>
       </div>
     </div>
 
     <!-- End card: the only thing on screen once the piece has finished. -->
     <div class="endcard" id="endcard">
-      <button class="playbtn playbtn--sm" id="replay" type="button">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.6-5.9M4 4v5h5"/></svg>
-        <span>Replay</span>
-      </button>
+      <p class="endcard__status" id="export-result" role="status" aria-live="polite"></p>
+      <div class="endcard__actions">
+        <button class="playbtn playbtn--sm" id="replay" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.6-5.9M4 4v5h5"/></svg>
+          <span>Replay</span>
+        </button>
+        <button class="playbtn playbtn--sm playbtn--ghost" id="export-again" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 18v1a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1"/></svg>
+          <span>Export again</span>
+        </button>
+      </div>
     </div>
 
   </div>
 </div>
 
 <script defer src="/assets/trailer/trailer.js"></script>
+<script defer src="/assets/trailer/trailer-record.js"></script>
 </body>
 </html>

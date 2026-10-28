@@ -221,6 +221,33 @@ is a self-contained forty-second piece — it loads none of the application's
 modules and talks to no API, so it can be opened on a projector without the
 workspace's state anywhere near it.
 
+The page can also render itself to a file. **Generate & Download 4K MP4
+Trailer** plays the piece once while recording the tab, then hands back the
+finished video. Three things are worth knowing before you rely on it:
+
+- **The output is as large as the display, not as large as the label.** Screen
+  capture cannot invent pixels, so a 1920×1080 screen produces a 1920×1080
+  file. The capability line above the button reads the real number before you
+  start, and the file name states the height that was actually captured.
+  `Hassad_AI_Trailer_4K.mp4` appears when — and only when — the file is really
+  4K and really MP4. A HiDPI display (200 % scaling on a 4K panel) does reach
+  4K, because the stage is measured in device pixels.
+- **MP4 depends on the browser.** Chrome and Edge can mux MP4 in
+  `MediaRecorder`; Firefox records WebM only. The codec list is tried in order
+  and the first supported entry is used. The container is never renamed to
+  match the button: a WebM file keeps its `.webm` extension, because a file
+  that misreports its container will not open in the player the audience uses.
+- **The browser will ask you to confirm the shared surface.** Capture is
+  opt-in and cannot be fully automated away — that prompt is a security
+  boundary, not a missing feature. Nothing is captured before you click, every
+  track is stopped on every exit path, and **Escape** cancels a take and saves
+  nothing.
+
+The recording is also affected by two presentation settings: reduced motion is
+temporarily overridden during an explicit export (otherwise the file would be a
+forty-second hold on one frame), and the on-screen HUD is suppressed so the
+video carries the piece rather than the operator's furniture.
+
 ---
 
 ## 🔌 API Reference

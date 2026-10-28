@@ -14,6 +14,12 @@ domains" on screen. Those are not marketing figures typed into HTML — they are
 read from the shipped taxonomy in this file and compared, so the day the
 taxonomy changes, this suite fails rather than letting the trailer drift into
 a claim that is no longer accurate.
+
+The export engine is checked for the opposite of what it used to be: capture
+must be reachable only from a click, the codec list must be capability-checked
+rather than assumed, and the file name must follow the container and height
+that were actually recorded. A page that named a WebM file ``.mp4`` would pass
+every other test in this repository.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[2] / "frontend"
 HTML_PATH = ROOT / "trailer.html"
 CSS_PATH = ROOT / "trailer" / "trailer.css"
 JS_PATH = ROOT / "trailer" / "trailer.js"
+REC_PATH = ROOT / "trailer" / "trailer-record.js"
 
 PASS = 0
 FAIL = 0
@@ -52,35 +59,40 @@ def css_block(css: str, selector: str) -> str:
 def main() -> int:
     print("=== cinematic trailer page ===")
 
-    for path in (HTML_PATH, CSS_PATH, JS_PATH):
+    for path in (HTML_PATH, CSS_PATH, JS_PATH, REC_PATH):
         check(f"{path.name} exists", path.is_file(), str(path))
-    if not all(p.is_file() for p in (HTML_PATH, CSS_PATH, JS_PATH)):
+    if not all(p.is_file() for p in (HTML_PATH, CSS_PATH, JS_PATH, REC_PATH)):
         print(f"\nTOTAL: {PASS} passed, {FAIL} failed")
         return 1
 
     html = HTML_PATH.read_text(encoding="utf-8")
     css = CSS_PATH.read_text(encoding="utf-8")
     js = JS_PATH.read_text(encoding="utf-8")
+    rec = REC_PATH.read_text(encoding="utf-8")
+    all_js = js + "\n" + rec
 
     # ---------------------------------------------------------------- isolation
     print("\n=== isolation ===")
 
-    # The page loads its own two files and nothing from the application. An
-    # import of an app module would drag the product's login state, its API
-    # client and its language store onto a projector screen.
-    check("the page loads only its own stylesheet and script",
+    # The page loads its own files and nothing from the application. An import
+    # of an app module would drag the product's login state, its API client and
+    # its language store onto a projector screen.
+    check("the page loads only its own stylesheet and scripts",
           "/assets/trailer/trailer.css" in html
           and "/assets/trailer/trailer.js" in html
+          and "/assets/trailer/trailer-record.js" in html
           and "/assets/css/styles.css" not in html
           and "/assets/js/" not in html)
 
-    check("the script is a single deferred classic script",
-          html.count("<script") == 1 and "defer" in html
-          and re.search(r"<script[^>]+src=", html) is not None)
+    check("both scripts are deferred and local",
+          html.count("<script") == 2
+          and html.count("defer") >= 2
+          and re.search(r"<script[^>]+src=", html) is not None
+          and "http" not in "".join(re.findall(r"<script[^>]*>", html)))
 
     check("the page imports no application module",
-          re.search(r'from\s*["\']\./|import\s', js) is None
-          and "api.js" not in js and "i18n.js" not in js)
+          re.search(r'from\s*["\']\./|import\s', all_js) is None
+          and "api.js" not in all_js and "i18n.js" not in all_js)
 
     # The product page must not link here: the trailer is a presentation tool,
     # not a feature of the workspace.
@@ -88,26 +100,73 @@ def main() -> int:
     check("the product page does not link to the trailer",
           "trailer" not in index.lower())
 
-    # --------------------------------------------------------------- no recording
-    print("\n=== the page records nothing ===")
+    # ------------------------------------------------------------ export engine
+    print("\n=== export runs only on request ===")
 
-    recording = re.search(
-        r"MediaRecorder|getDisplayMedia|captureStream|createObjectURL|"
-        r"showSaveFilePicker|\.download\b",
-        js + html,
-    )
-    check("no recording or capture primitive is present", recording is None,
-          str(recording.group(0)) if recording else "")
+    check("the export control is labelled as asked",
+          "Generate &amp; Download 4K MP4 Trailer" in html
+          and 'id="export"' in html)
+
+    # A page that began capturing on load would be a different, worse thing.
+    # Capture is reachable only from a click handler.
+    check("capture cannot start without a click",
+          not re.search(r"^runExport\(", rec, re.M)
+          and 'addEventListener("click"' in rec
+          and "getDisplayMedia" in rec)
+
+    check("the exact requested codec is tried first",
+          rec.find('video/mp4; codecs="avc1.42E01E, mp4a.40.2"')
+          < rec.find("video/webm"))
+
+    check("every candidate is capability-checked before use",
+          "isTypeSupported" in rec and "CANDIDATES" in rec)
+
+    check("no microphone or system audio is captured", "audio: false" in rec)
+
+    check("the capture prefers the current tab",
+          "preferCurrentTab: true" in rec)
+
+    check("the bitrate is high enough for 4K60",
+          re.search(r"BITRATE = (\d+)", rec) is not None
+          and int(re.search(r"BITRATE = (\d+)", rec).group(1)) >= 40_000_000)
+
+    # Without the crop the file is the whole tab, letterbox bars included.
+    check("the capture is cropped to the 16:9 stage",
+          "CropTarget" in rec and ".cropTo(" in rec
+          and 'fromElement($("stage"))' in rec)
+
+    # The extension follows the container that was actually recorded, so a
+    # WebM file can never be handed out pretending to be an MP4.
+    check("the file name follows the real container and height",
+          "`Hassad_AI_Trailer_${label}.${ext}`" in rec
+          and 'ext = "mp4"' in rec and 'ext = "webm"' in rec
+          and 'ext = "mkv"' in rec)
+
+    check("a take cannot be started twice at once",
+          "if (state.busy) return;" in rec)
+
+    check("every track is stopped",
+          "getTracks().forEach" in rec and "track.stop()" in rec)
+
+    check("every object URL is revoked",
+          "createObjectURL" in rec and "revokeObjectURL" in rec)
+
+    check("Escape cancels a take and saves nothing",
+          '"Escape"' in rec and "abort()" in rec and "state.chunks = [];" in rec)
+
+    check("the end card is held back until the recorder stops",
+          "body.is-done:not(.is-exporting) .endcard" in css
+          and "body.is-exporting .hud" in css)
 
     check("nothing is written as markup",
-          re.search(r"innerHTML|outerHTML|insertAdjacentHTML|document\.write", js)
+          re.search(r"innerHTML|outerHTML|insertAdjacentHTML|document\.write", all_js)
           is None)
 
     check("no inline event handlers in the markup",
           re.search(r"\son[a-z]+\s*=\s*[\"']", html) is None)
 
     check("no dynamic code evaluation",
-          re.search(r"\beval\s*\(|new\s+Function\s*\(", js) is None)
+          re.search(r"\beval\s*\(|new\s+Function\s*\(", all_js) is None)
 
     # ------------------------------------------------------------------- language
     print("\n=== english, left to right ===")
@@ -199,7 +258,7 @@ def main() -> int:
     print("\n=== the wiring holds ===")
 
     html_ids = set(re.findall(r'id="([^"]+)"', html))
-    js_ids = set(re.findall(r'\$\(\s*["\']([^"\']+)["\']\s*\)', js))
+    js_ids = set(re.findall(r'\$\(\s*["\']([^"\']+)["\']\s*\)', all_js))
     missing_ids = sorted(js_ids - html_ids)
     check(f"all {len(js_ids)} ids the script looks up exist in the page",
           not missing_ids, str(missing_ids))
@@ -212,10 +271,10 @@ def main() -> int:
         html_classes.update(attr.split())
 
     js_classes = set(re.findall(
-        r'classList\.(?:add|remove|toggle)\(\s*["\']([A-Za-z][\w-]*)["\']', js))
+        r'classList\.(?:add|remove|toggle)\(\s*["\']([A-Za-z][\w-]*)["\']', all_js))
     js_classes.update(re.findall(
-        r'\["((?:is-)[a-z-]+)"\s*,', js))
-    js_classes.update({"is-playing", "is-done", "is-static"})
+        r'\["((?:is-)[a-z-]+)"\s*,', all_js))
+    js_classes.update({"is-playing", "is-done", "is-static", "is-exporting"})
 
     css_classes = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
 
@@ -230,22 +289,23 @@ def main() -> int:
     # replay control has to be reachable once it ends.
     check("the real cursor returns when the piece is over",
           "body.is-playing { cursor: none; }" in css
-          and "body.is-done .endcard" in css)
+          and "body.is-done:not(.is-exporting) .endcard" in css)
 
     check("a viewer who asked for stillness is shown the finished frame",
-          "prefers-reduced-motion" in css and "REDUCED" in js
+          "prefers-reduced-motion" in css and "reducedNow" in js
           and "is-static" in css)
 
     # --------------------------------------------------------------- it parses
     print("\n=== the script parses ===")
 
-    try:
-        import esprima
-        esprima.parseScript(js)
-        parsed, why = True, ""
-    except Exception as exc:                      # noqa: BLE001 - reported below
-        parsed, why = False, f"{type(exc).__name__}: {exc}"
-    check("trailer.js is syntactically valid", parsed, why)
+    for name, source in (("trailer.js", js), ("trailer-record.js", rec)):
+        try:
+            import esprima
+            esprima.parseScript(source)
+            parsed, why = True, ""
+        except Exception as exc:                  # noqa: BLE001 - reported below
+            parsed, why = False, f"{type(exc).__name__}: {exc}"
+        check(f"{name} is syntactically valid", parsed, why)
 
     # ------------------------------------------------------------------- route
     print("\n=== the route exists ===")

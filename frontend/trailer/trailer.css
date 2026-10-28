@@ -924,6 +924,9 @@ body.is-playing { cursor: none; }
 }
 body.is-playing .hud { opacity: 1; }
 body.is-done .hud { opacity: 0; }
+/* During an export the HUD is suppressed, so the file carries the piece and
+   not the operator's furniture. */
+body.is-exporting .hud { opacity: 0; }
 
 .hud__chapter { color: var(--emerald-ink); font-weight: 600; white-space: nowrap; }
 .hud__track {
@@ -1047,18 +1050,96 @@ body.is-done .poster { opacity: 0; visibility: hidden; pointer-events: none; }
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- export ---- */
+
+.poster__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * .9);
+  margin-top: calc(var(--u) * 1.5);
+}
+.poster__actions .playbtn { margin-top: 0; }
+
+/* Secondary weight: the trailer itself is the headline act, the export is the
+   tool beside it. Same shape, less light. */
+.playbtn--ghost {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid rgba(52, 211, 153, .42);
+  box-shadow: none;
+  font-size: calc(var(--u) * .98);
+  padding: calc(var(--u) * .85) calc(var(--u) * 2);
+}
+.playbtn--ghost svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.playbtn--ghost:hover {
+  background: rgba(16, 185, 129, .10);
+  border-color: rgba(52, 211, 153, .72);
+  box-shadow: 0 calc(var(--u) * .6) calc(var(--u) * 2) rgba(16, 185, 129, .20);
+}
+
+.export__spec {
+  margin: calc(var(--u) * .6) 0 0;
+  max-width: calc(var(--u) * 64);
+  font-size: calc(var(--u) * .78);
+  line-height: 1.55;
+  letter-spacing: .04em;
+  text-align: center;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  min-height: calc(var(--u) * 1.2);
+}
+.export__spec[data-tone="ok"] { color: var(--emerald-ink); }
+.export__spec[data-tone="warn"] { color: var(--warn); }
+.export__spec[data-tone="bad"] { color: var(--bad); }
+.export__spec[data-tone="busy"] { color: var(--ink); }
+
+.endcard__status {
+  margin: 0 0 calc(var(--u) * 1);
+  max-width: calc(var(--u) * 64);
+  font-size: calc(var(--u) * .92);
+  line-height: 1.55;
+  letter-spacing: .02em;
+  text-align: center;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  min-height: calc(var(--u) * 1.4);
+}
+.endcard__status[data-tone="ok"] { color: var(--emerald-ink); }
+.endcard__status[data-tone="bad"] { color: var(--bad); }
+
+.endcard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--u) * .8);
+}
+
 .endcard {
+  gap: calc(var(--u) * .5);
   background: radial-gradient(60% 55% at 50% 50%, rgba(0, 0, 0, .35), rgba(0, 0, 0, .82));
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
 }
-body.is-done .endcard {
+
+/* The end card is held back while a take is still rolling: the closing frame
+   belongs in the file, not the replay control. It appears the instant the
+   recorder stops. */
+body.is-done:not(.is-exporting) .endcard {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
 }
-body.is-done .scene { opacity: .16; }
+body.is-done:not(.is-exporting) .scene { opacity: .16; }
 
 /* Reduced motion: the final composition is shown as a still, not dimmed, with
    the replay control already on screen. */
@@ -1080,10 +1161,12 @@ body.is-static .endcard {
    version of the same thing — so the engine jumps to the final state and CSS
    stops transitioning. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  body:not(.is-exporting) *,
+  body:not(.is-exporting) *::before,
+  body:not(.is-exporting) *::after {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
   }
-  .atmo__aurora { animation: none; }
+  body:not(.is-exporting) .atmo__aurora { animation: none; }
 }

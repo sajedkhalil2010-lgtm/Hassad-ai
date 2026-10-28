@@ -17,8 +17,15 @@
    ========================================================================== */
 
 const TOTAL = 40000;          // 40 seconds, exactly
-const REDUCED = window.matchMedia &&
+const OS_REDUCED = window.matchMedia &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* The system preference is honoured for viewing. An export, though, is an
+   explicit instruction to produce the finished piece — a forty-second hold of
+   one frame is not what was asked for — so while an export is running the
+   preference is set aside, and the export path says so before it starts. */
+const reducedNow = () =>
+  OS_REDUCED && !document.body.classList.contains("is-exporting");
 
 /* ------------------------------------------------------------------ refs -- */
 
@@ -363,6 +370,7 @@ function finish() {
   document.body.classList.remove("is-playing");
   document.body.classList.add("is-done");
   paint(TOTAL);
+  document.dispatchEvent(new CustomEvent("hassad:trailer-end"));
 }
 
 function start() {
@@ -383,7 +391,7 @@ function start() {
   // A viewer who asked the system not to animate is shown the finished frame
   // and the replay control, not a slowed-down version of the same forty
   // seconds. CSS alone would still sail each beat past them one at a time.
-  if (REDUCED) {
+  if (reducedNow()) {
     showScene("scene-impact");
     on("i-finale");
     countTo("st-1", 610, "", 1);
@@ -394,6 +402,7 @@ function start() {
     document.body.classList.remove("is-playing");
     document.body.classList.add("is-static");
     paint(TOTAL);
+    document.dispatchEvent(new CustomEvent("hassad:trailer-end"));
     return;
   }
 
@@ -401,6 +410,7 @@ function start() {
   startedAt = performance.now();
   playing = true;
   raf = requestAnimationFrame(frame);
+  document.dispatchEvent(new CustomEvent("hassad:trailer-start"));
 }
 
 /* ------------------------------------------------------------------- wire -- */
@@ -410,6 +420,16 @@ $("replay").addEventListener("click", () => {
   reset();
   start();
 });
+
+/* The one seam the export engine is allowed to use. It is a deliberate,
+   documented surface, rather than the recorder reaching into this module's
+   private state. */
+window.HassadTrailer = {
+  start,
+  reset,
+  duration: TOTAL,
+  isPlaying: () => playing,
+};
 
 document.addEventListener("keydown", (event) => {
   if (event.code === "Space" || event.code === "Enter") {
