@@ -1254,10 +1254,15 @@ body[data-theme="light"] .ico-moon { display: none; }
    does not re-run layout or paint, which is what lets a 60fps capture stay at
    60fps while a camera move is in progress. */
 
-/* The operator's real pointer is parked for the duration. Left visible it
-   would appear alongside the drawn one and give away that nobody is driving. */
-body.is-recording { cursor: none; }
-body.is-recording * { cursor: none !important; }
+/* The operator's real pointer is hidden for a TAKE, because left visible it
+   would appear alongside the drawn one and give away that nobody is driving.
+
+   A preview is the exception. `body.is-trailer` is what keeps the real cursor
+   on screen while the choreography plays, so the HUD's stop control stays
+   reachable with a mouse — Escape works either way, but a control you cannot
+   see the pointer over is not really a control. */
+body.is-recording:not(.is-trailer) { cursor: none; }
+body.is-recording:not(.is-trailer) * { cursor: none !important; }
 
 /* ---- spotlight ---------------------------------------------------------- */
 
@@ -1342,4 +1347,52 @@ body.is-recording * { cursor: none !important; }
 @keyframes rectap {
   0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, .55); }
   100% { box-shadow: 0 0 0 22px rgba(16, 185, 129, 0); }
+}
+
+/* ---- the rest state ----------------------------------------------------- */
+
+/* Where the drawn pointer is currently sitting. Browsers apply the :hover
+   pseudo-class only to genuine pointer input, so it cannot be faked from
+   script in any engine — rather than duplicate every hover rule in the
+   stylesheet here (a copy that would rot the first time a colour changed),
+   this is one class the presentation layer owns, deliberately a step quieter
+   than the .rec-hl focus outline so the two never compete. */
+.rec-hover {
+  border-radius: var(--r-sm);
+  outline: 1px solid rgba(16, 185, 129, .6);
+  outline-offset: 3px;
+}
+
+/* ---- trailer HUD -------------------------------------------------------- */
+
+/* The preview's only chrome: which chapter is playing, how much of the three
+   minutes is left, and a way out. Above the spotlight and the wipe so it is
+   never dimmed out of its own preview, but below the pointer. */
+.trailerhud {
+  position: fixed; inset-inline: 0; bottom: clamp(16px, 3vw, 30px);
+  z-index: 170;
+  display: flex; align-items: center; justify-content: center;
+  gap: var(--sp-4); flex-wrap: wrap;
+  padding: 10px 16px;
+  pointer-events: none;
+  font-family: var(--display); font-size: 12.5px; letter-spacing: .04em;
+}
+.trailerhud__chapter { color: var(--emerald-ink); font-weight: 700; }
+.trailerhud__time {
+  color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
+.trailerhud__stop {
+  pointer-events: auto;
+  padding: 7px 15px; border-radius: var(--r-pill);
+  font: inherit; font-weight: 600; color: #04140e;
+  background: linear-gradient(135deg, var(--emerald-2), var(--emerald-d));
+  border: 1px solid transparent;
+  transition: filter .16s var(--ease);
+}
+.trailerhud__stop:hover { filter: brightness(1.1); }
+
+/* The trigger reads as live while a preview is running, so the sidebar shows
+   that something is already playing rather than inviting a second press. */
+.snav__item.is-playing {
+  color: var(--emerald-ink); border-color: rgba(16, 185, 129, .34);
 }

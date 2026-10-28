@@ -1,13 +1,14 @@
 /* ============================================================================
- * recordfx.js — the cinematic layer that sits OVER the demo recorder
+ * recordfx.js — the presentation layer that sits OVER the demo recorder
  *
  * What this adds
  * --------------
- * A camera (Ken Burns push-in and pull-out), chapter transitions, a spotlight
- * that dims everything except the thing being discussed, and a smooth gliding
- * pointer that arrives at each control and ripples when it "clicks". It exists
- * because a static screen recording of a working product is still a dull three
- * minutes, and engagement is a legitimate production goal.
+ * A smooth gliding pointer that arrives at each control and ripples when it
+ * "clicks", a vignette that dims everything except the thing being discussed,
+ * chapter transitions, and the scrolling that carries the framing from one
+ * subject to the next. It exists because a static screen recording of a working
+ * product is still a dull three minutes, and engagement is a legitimate
+ * production goal.
  *
  * What it explicitly does NOT do
  * ------------------------------
@@ -15,59 +16,49 @@
  * record.js still sends the operator's real photograph to the real model and
  * still films whatever comes back — including a slow answer and including a
  * failure. Everything here is a PRESENTATION layer painted on top of that
- * genuine behaviour, exactly like zooming a clip in an editor or adding a
- * pointer highlight in a screencast:
+ * genuine behaviour, exactly like adding a pointer highlight in a screencast:
  *
  *   · the cursor is drawn, not recorded — the operator's real pointer is
  *     parked and plays no part;
- *   · the zoom is a CSS transform on the page, not a different page;
  *   · `tap(node, { real: false })` shows a click ripple WITHOUT dispatching a
  *     click — used for the dropzone, where a real click would open a file
  *     picker and stall the automation. Only `real: true` activates anything.
  *
  * The distinction that keeps this honest is that nothing is ever *invented*:
  * no frame of the interface is redrawn, no verdict is authored, no state is
- * faked. If the diagnosis is unflattering, the zoom makes it more visible, not
- * less. The recorder panel says outright that this layer is presentational.
+ * faked. If the diagnosis is unflattering, the spotlight makes it more
+ * visible, not less.
  *
- * Why the camera is a transform and not a scroll
- * ---------------------------------------------
- * `getDisplayMedia` captures the tab, so anything painted in the tab is in the
- * recording. Scaling the screen layers with CSS therefore produces a genuine
- * camera move in the exported file. It is done with `transform` alone because
- * that is compositor work: it animates on the GPU without re-running layout or
- * paint, which is what keeps a 60fps capture at 60fps.
+ * Why there is deliberately NO camera
+ * ----------------------------------
+ * An earlier version pushed in and out on each subject — a Ken Burns move done
+ * as a CSS transform on the screen layers. It has been removed. The framing is
+ * now fixed for the whole take: no scale, no transform-origin, no transform
+ * written to any layer of the product at any point. The interface is shown at
+ * its own size, and the only things that move are the pointer, the scroll and
+ * the light.
  *
- * The scroll and the zoom are kept deliberately independent. Scrolling uses
- * `offsetTop` (a layout quantity, unaffected by transforms) and the zoom uses
- * `transform-origin` pinned to the viewport centre — so neither can read the
- * other's output and they cannot fight. A zoom about the viewport centre also
- * means an element scrolled to centre STAYS centred while it is magnified,
- * which is the whole trick behind a stable push-in.
+ * That is not a lesser result, it is a different and in several ways a better
+ * one. A zoom crops: at 1.45x a viewer sees one card and loses the two beside
+ * it, which is exactly the context a three-minute product tour is trying to
+ * build. It also means the recording is a faithful record of the product's own
+ * layout rather than of a presentation of it.
+ *
+ * Everything animated here is a transform or an opacity — compositor work that
+ * does not re-run layout or paint, which is what keeps a 60fps capture at 60fps.
+ * The only transform in this file is `translate3d` on the pointer, and the only
+ * element it is ever applied to is this module's own overlay.
  *
  * Nothing here is verifiable without a browser: it is checked by static suites
  * and by reading it, not by looking at a rendered frame.
  * ========================================================================== */
 
-/** The two full screens. Both are normal-flow layers, so their transform
- *  origin is the viewport centre expressed in the layer's own coordinates. */
-const SCREENS = ["#landing", "#app"];
-
-/** Fixed-position layers. They already fill the viewport, so their origin is
- *  simply their own centre — no coordinate conversion needed. */
+/** Fixed-position layers. Those are pinned to the viewport by definition, so
+ *  scrolling the window under them would move the page for nothing. */
 const FIXED = ["#su-modal", "#plan-modal", "#chat-modal", "#auth-modal", ".toast"];
 
-/** Push-in amounts. Three magnifications plus the neutral `reset()` are
- *  enough to build a shot list; a fourth would only make the cuts harder to
- *  read. The pull-back between chapters is the reset, not a fourth zoom. */
-const ZOOM_WIDE = 1.18;   // whole cards, pricing tiers
-const ZOOM_MID = 1.45;    // the default emphasis
-const ZOOM_TIGHT = 1.62;  // a single control, a link, a headline
-
-const ZOOM_MS = 900;                 // camera move duration
-const CURVE = "cubic-bezier(.33,.02,.2,1)";
-const SCROLL_SETTLE_MS = 900;        // Safari < 18 emits no scrollend
-const HOLD_DEFAULT_MS = 1600;        // dwell on a shot before moving on
+const MOVE_MS = 900;         // how long a scroll is allowed to settle
+const HOLD_DEFAULT_MS = 1600; // dwell on a shot before moving on
 
 /* --------------------------------------------------------------- helpers -- */
 
@@ -84,9 +75,8 @@ function resolve(target) {
 }
 
 /** The element's position in the DOCUMENT, computed from the offsetParent
- *  chain. `getBoundingClientRect` would be wrong here: it reports the
- *  visually transformed box, which is exactly the number the camera is trying
- *  not to depend on. offsetTop is layout and no transform can move it. */
+ *  chain. offsetTop is a layout quantity, so nothing this module animates can
+ *  ever move the number the scroll is aimed at. */
 function docTop(node) {
   let y = 0;
   let cursor = node;
@@ -97,9 +87,7 @@ function docTop(node) {
   return y;
 }
 
-/** True when the node lives inside a fixed layer. Those are pinned to the
- *  viewport by definition, so scrolling the window under them would move the
- *  page for nothing. */
+/** True when the node lives inside a fixed layer — a dialog, mostly. */
 function inFixedLayer(node) {
   let cursor = node;
   while (cursor && cursor !== document.body) {
@@ -124,11 +112,11 @@ function svgNode(name, attrs) {
 
 /* --------------------------------------------------------------- module -- */
 
-export function initCinema() {
-  const live = { on: false, raf: 0, wander: 0, zoom: 1 };
+export function initPresentation() {
+  const live = { on: false, raf: 0, wander: 0 };
   const at = { x: 0, y: 0 };          // where the drawn pointer currently is
   const els = {};
-  let styled = [];                    // layers carrying an inline camera style
+  let hovered = null;                 // the control the drawn pointer rests on
 
   /* --------------------------------------------------------- the overlay */
 
@@ -174,52 +162,13 @@ export function initCinema() {
     els.veil = els.wipe = els.pointer = els.ripple = null;
   }
 
-  /* ------------------------------------------------------------- the camera */
-
-  function layersFor(node) {
-    if (node && inFixedLayer(node)) {
-      return FIXED.map(q).filter(Boolean);
-    }
-    return SCREENS.map(q).filter(Boolean);
-  }
-
-  /** The single place a transform is ever written. Origin is pinned to the
-   *  viewport centre so a centred element stays centred while it grows; at
-   *  z=1 any origin renders identically, which is why easing back out is
-   *  always safe. */
-  function applyZoom(z, layers) {
-    for (const layer of layers) {
-      const fixedLayer = FIXED.some((sel) => q(sel) === layer);
-      layer.style.transformOrigin = fixedLayer
-        ? "50% 50%"
-        : `50% ${Math.round(window.scrollY + window.innerHeight / 2)}px`;
-      layer.style.transition = `transform ${ZOOM_MS}ms ${CURVE}`;
-      layer.style.transform = z === 1 ? "" : `scale(${z})`;
-      if (!styled.includes(layer)) styled.push(layer);
-    }
-    live.zoom = z;
-  }
-
-  /** Back to a neutral framing with no animation, for use under cover of a
-   *  wipe. An eased move here would still be half-finished when the
-   *  transition faded away, and the chapter would open mid-gesture. Each
-   *  one therefore starts wide and pushes in on its own first subject. */
-  function reset() {
-    for (const layer of [...SCREENS.map(q), ...FIXED.map(q)].filter(Boolean)) {
-      layer.style.transition = "";
-      layer.style.transform = "";
-      layer.style.transformOrigin = "";
-      if (!styled.includes(layer)) styled.push(layer);
-    }
-    live.zoom = 1;
-  }
-
   /* ------------------------------------------------------------------ scroll */
 
-  /** Centres the element in the un-transformed viewport, then waits for the
-   *  browser's own smooth scroll to finish. `scrollend` is the right signal
-   *  where it exists; elsewhere a bounded wait is the honest fallback rather
-   *  than a guess that is right on one machine. */
+  /** Centres the element in the viewport, then waits for the browser's own
+   *  smooth scroll to finish. `scrollend` is the right signal where it exists;
+   *  elsewhere a bounded wait is the honest fallback rather than a guess that
+   *  is right on one machine. This is the ONLY thing that reframes a shot —
+   *  there is no scale, no pan and no transform anywhere in this module. */
   function scrollCenter(node) {
     if (inFixedLayer(node)) return Promise.resolve();
     const height = Math.max(
@@ -243,7 +192,7 @@ export function initCinema() {
         clearTimeout(timer);
         resolve();
       };
-      const timer = setTimeout(done, SCROLL_SETTLE_MS);
+      const timer = setTimeout(done, MOVE_MS);
       window.addEventListener("scrollend", done, { once: true });
       window.scrollTo({ top: goal, behavior: "smooth" });
     });
@@ -259,25 +208,12 @@ export function initCinema() {
     }
   }
 
-  /** Where the element's centre will be once the camera has finished moving.
-   *  The rect is inverted with the scale it was actually MEASURED under —
-   *  applyZoom has already stored the destination by the time this runs, but
-   *  the transition has not moved a pixel yet, so using the destination here
-   *  would divide a still-wide rect by a still-tight scale. Getting this
-   *  wrong sends the pointer to the wrong place exactly when the push-in is
-   *  largest, which is most of the video. It is also what lets the pointer
-   *  and the camera travel CONCURRENTLY — one gesture, not two in a row. */
-  function finalCenter(node, zoom, fromZoom) {
+  /** Where to put the pointer on a subject. A little up and left of the
+   *  centre, which is where a hand actually lands on a button rather than on
+   *  its mathematical middle. */
+  function aim(node) {
     const r = node.getBoundingClientRect();
-    const c = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    const raw = {
-      x: c.x + (r.left + r.width / 2 - c.x) / (fromZoom || 1),
-      y: c.y + (r.top + r.height / 2 - c.y) / (fromZoom || 1),
-    };
-    return {
-      x: c.x + zoom * (raw.x - c.x),
-      y: c.y + zoom * (raw.y - c.y),
-    };
+    return { x: r.left + r.width * 0.42, y: r.top + r.height * 0.4 };
   }
 
   /** Glides along a quadratic bezier rather than a straight line. Real hands
@@ -315,8 +251,9 @@ export function initCinema() {
   function tap(target, opts = {}) {
     const node = resolve(target);
     if (!node) return Promise.resolve();
-    const r = node.getBoundingClientRect();
-    moveCursor(r.left + r.width * 0.42, r.top + r.height * 0.4);
+    const spot = aim(node);
+    moveCursor(spot.x, spot.y);
+    restOn(node);
 
     if (els.ripple) {
       els.ripple.classList.remove("is-on");
@@ -332,15 +269,40 @@ export function initCinema() {
 
   /* ------------------------------------------------------------- spotlight */
 
-  /** Dims the periphery so the eye has nowhere else to go.
+  /** Rests the pointer on a control and announces it the way a real pointer
+   *  would. The DOM mouse events are dispatched for real, so any hover
+   *  handler in the product runs exactly as it would under a farmer's hand.
+   *
+   *  The CSS `:hover` pseudo-class is a separate matter: browsers apply it
+   *  only to genuine pointer input and it cannot be faked from script, by any
+   *  technique, in any engine. Rather than copy every hover rule in the
+   *  stylesheet into this module — a duplicate that would silently rot the
+   *  first time a colour changes — the rest state is one class this module
+   *  owns, styled once, sitting a step quieter than the focus outline. */
+  function restOn(node) {
+    if (hovered && hovered !== node) hovered.classList.remove("rec-hover");
+    hovered = node || null;
+    if (!hovered) return;
+    hovered.classList.add("rec-hover");
+    const spot = aim(hovered);
+    hovered.dispatchEvent(new MouseEvent("mouseover", {
+      bubbles: true, clientX: spot.x, clientY: spot.y,
+    }));
+    hovered.dispatchEvent(new MouseEvent("mouseenter", {
+      bubbles: false, clientX: spot.x, clientY: spot.y,
+    }));
+  }
+
+  /** Dims the periphery so the eye has nowhere else to go. With the framing
+   *  fixed this is now the ONLY emphasis mechanism, which is why it matters
+   *  that it targets precisely: it is what tells a viewer which of three
+   *  similar cards is being discussed, in place of the crop a zoom used to do.
    *
    *  Retargeting is deliberately two-phase: fade down, move the gradient
    *  while the veil is invisible, fade back up. A gradient's stops cannot be
    *  transitioned — moving them is paint work and would snap the whole
    *  vignette across the screen between two shots — so only opacity is ever
-   *  animated and the reposition happens where nobody can see it. The move is
-   *  deferred rather than awaited, so the shot's dwell is never held open
-   *  waiting on a fade the viewer does not need to sit through. */
+   *  animated and the reposition happens where nobody can see it. */
   function spotlight(node) {
     if (!els.veil || !node) return;
     const r = node.getBoundingClientRect();
@@ -376,7 +338,9 @@ export function initCinema() {
 
   /** Ambient life for the stretches where nothing can be driven — chiefly the
    *  seconds a genuine diagnosis is in flight. The pointer wanders a slow
-   *  figure-eight and the vignette breathes; neither touches the product. */
+   *  figure-eight and the vignette breathes; neither touches the product.
+   *  With no camera to move, this is what keeps a long wait from reading as a
+   *  frozen frame. */
   function startWander() {
     if (!live.on) return;
     els.veil?.classList.add("is-drifting");
@@ -445,32 +409,30 @@ export function initCinema() {
 
   /* --------------------------------------------------------------- public */
 
-  /** One shot: bring the subject into frame, push in on it, glide the pointer
-   *  onto it, and let the spotlight take over. Every beat in the timeline is
-   *  built out of this and `tap`. */
+  /** One shot: bring the subject into frame with the page's own scrolling,
+   *  glide the pointer onto it, and let the spotlight take over. Every beat in
+   *  the timeline is built out of this and `tap`. Nothing here touches the
+   *  product's geometry — the framing it hands back is the framing the page
+   *  already has. */
   function focus(target, opts = {}) {
     const node = resolve(target);
     if (!node) return Promise.resolve();
-    const zoom = opts.zoom ?? ZOOM_MID;
-    const layers = layersFor(node);
 
-    const ready = opts.overlay ? Promise.resolve() : scrollCenter(node);
+    // A dialog is already pinned to the centre of the viewport; scrolling the
+    // page underneath it would only swing the backdrop around behind it.
+    const ready = inFixedLayer(node) ? Promise.resolve() : scrollCenter(node);
     return ready.then(() => {
       if (!live.on) return null;
-      // Captured before the move, because the rect below is still showing
-      // this scale even though applyZoom has already committed to the next.
-      const fromZoom = live.zoom;
-      applyZoom(zoom, layers);
-      const arrival = finalCenter(node, zoom, fromZoom);
-      // Camera and pointer travel together: two sequential moves would read
-      // as a slideshow, one concurrent move reads as a person.
-      return Promise.all([glideTo(arrival), wait(ZOOM_MS)]);
+      return glideTo(aim(node));
     }).then(() => {
       if (!live.on) return null;
       if (opts.spot !== false) spotlight(node);
-      // Fires once the frame has settled, before the dwell — the moment to
-      // put a crisp edge on the subject or update the HUD, rather than
-      // guessing at a delay that only matches one machine's animation.
+      // The pointer has arrived, so the control is now hovered — the DOM
+      // events fire for real and the rest state lights up.
+      restOn(node);
+      // Fires once the pointer has landed, before the dwell — the moment to
+      // put a crisp edge on the subject rather than guessing at a delay that
+      // only matches one machine's animation.
       if (typeof opts.onLand === "function") {
         try { opts.onLand(node); } catch (err) { console.error("[hassad] shot hook failed:", err); }
       }
@@ -482,8 +444,6 @@ export function initCinema() {
     if (live.on) return;
     mount();
     live.on = true;
-    live.zoom = 1;
-    styled = [];
     document.body.classList.add("is-recording");
     moveCursor(window.innerWidth * 0.7, window.innerHeight * 0.32);
   }
@@ -492,13 +452,7 @@ export function initCinema() {
     live.on = false;
     cancelAnimationFrame(live.raf);
     stopWander();
-    for (const layer of styled) {
-      layer.style.transform = "";
-      layer.style.transformOrigin = "";
-      layer.style.transition = "";
-    }
-    styled = [];
-    live.zoom = 1;
+    restOn(null);
     document.body.classList.remove("is-recording");
     clearSpotlight();
     unmount();
@@ -510,12 +464,8 @@ export function initCinema() {
     focus,
     tap,
     wipe,
-    reset,
     wander,
     wanderUntil,
     clearSpotlight,
-    ZOOM_WIDE,
-    ZOOM_MID,
-    ZOOM_TIGHT,
   };
 }

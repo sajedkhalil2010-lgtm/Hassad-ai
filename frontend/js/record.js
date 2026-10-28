@@ -17,12 +17,17 @@
  * the only kind of demo that survives being checked. If the model is slow the
  * video shows it being slow. If the model fails the video shows the failure.
  *
- * A cinematic layer is painted on top by recordfx.js — a camera push-in,
- * chapter wipes, a spotlight and a drawn pointer. That layer is PRESENTATION
- * only: it changes how a shot is framed, never what the product does. The
+ * A presentation layer is painted on top by recordfx.js — chapter wipes, a
+ * spotlight and a drawn pointer. That layer is PRESENTATION only: it changes
+ * how a shot is lit and where the eye goes, never what the product does. The
  * verdict on camera is still whatever the model actually returned, slow or
  * failing included, and no frame of the interface is redrawn. The panel says
  * so in as many words, so nobody mistakes the export for an untouched capture.
+ *
+ * There is deliberately no camera move. No zoom, no pan, no transform is ever
+ * written to a product layer: the interface is filmed at its own size and the
+ * only thing that reframes a shot is the page's own scrolling. The framing is
+ * therefore identical from the first frame to the last.
  *
  * Two constraints no amount of code removes, so they are surfaced in the UI
  * rather than hidden:
@@ -39,7 +44,7 @@
 
 import { $, $all, bytes } from "./dom.js";
 import { t } from "./i18n.js";
-import { initCinema } from "./recordfx.js";
+import { initPresentation } from "./recordfx.js";
 
 /** The sequence itself. Beats are pinned to this clock so the exported file
  *  always runs 03:00, whatever the network was doing on the day it was shot. */
@@ -121,11 +126,13 @@ export function initRecorder(opts = {}) {
     outSize: $("rec-out-size"),
     outFormat: $("rec-out-format"),
     outFps: $("rec-fps"),
+    outRes: $("rec-res"),
   };
 
-  /** The camera, the pointer and the transitions. Everything it does is a
-   *  framing decision layered over the real interface — see recordfx.js. */
-  const fx = initCinema();
+  /** The pointer, the light and the transitions. Everything it does is layered
+   *  over the real interface and nothing it does touches the product's
+   *  geometry — see recordfx.js. It holds no camera and never scales anything. */
+  const fx = initPresentation();
 
   const absent = Object.keys(els).filter((key) => !els[key]);
   if (absent.length) {
@@ -160,20 +167,31 @@ export function initRecorder(opts = {}) {
   }
 
   /** Reads back what the capture actually committed to. The browser is free
-   *  to deliver fewer frames than were asked for, and the operator deserves
-   *  the real number rather than the requested one. */
-  function reportFps(stream) {
-    if (!els.outFps) return;
+   *  to deliver fewer frames and fewer pixels than were asked for, and the
+   *  operator deserves the real numbers rather than the requested ones.
+   *
+   *  This matters most for the resolution. `getDisplayMedia` cannot invent
+   *  pixels: it captures the tab or the screen as it physically is, so asking
+   *  for 3840×2160 on a 1920×1080 display returns 1920×1080. There is no way
+   *  to force 4K from in here that is not also a lie — upscaling on a canvas
+   *  would manufacture detail the product never drew, and it is the one thing
+   *  this recorder has never done and will not start. The only honest way to
+   *  state the size is to read it back off the track, which is what the output
+   *  panel shows. Shoot on a 4K display to get a 4K file. */
+  function reportCapture(stream) {
     const [track] = stream.getVideoTracks();
-    const got = track && typeof track.getSettings === "function"
-      ? Math.round(track.getSettings().frameRate || 0)
-      : 0;
-    els.outFps.textContent = got ? `${got} fps` : "—";
+    const s = track && typeof track.getSettings === "function" ? track.getSettings() : {};
+    const fps = Math.round(s.frameRate || 0);
+    if (els.outFps) els.outFps.textContent = fps ? `${fps} fps` : "—";
+    if (els.outRes) {
+      els.outRes.textContent = (s.width && s.height) ? `${s.width}×${s.height}` : "—";
+    }
   }
 
   /** Removes the edge from the last subject and drops the spotlight. The
-   *  outline is not decoration: at 1.45x on a dimmed surround it is what
-   *  still tells a viewer which of three similar cards is being discussed. */
+   *  outline earns its place now that there is no camera: with the framing
+   *  fixed, this and the spotlight are what tell a viewer which of three
+   *  similar cards is being discussed. */
   function clearHl() {
     if (state.hl) state.hl.classList.remove("rec-hl");
     state.hl = null;
@@ -182,14 +200,12 @@ export function initRecorder(opts = {}) {
     fx.clearSpotlight();
   }
 
-  /** One framed subject at a time: centre it, push in, glide the pointer onto
-   *  it, then hold. Replaces the old scroll-then-outline helper — framing and
-   *  emphasis are the same decision now, so they are one call. */
+  /** One subject at a time: centre it with the page's own scrolling, glide the
+   *  pointer onto it, then hold. No scale is applied anywhere — the subject is
+   *  shown at exactly the size the product renders it. */
   function hl(target, ms = 4000, opts = {}) {
     clearHl();
     return fx.focus(target, {
-      zoom: opts.zoom ?? fx.ZOOM_MID,
-      overlay: Boolean(opts.overlay),
       hold: ms,
       onLand: (el) => {
         el.classList.add("rec-hl");
@@ -279,7 +295,12 @@ export function initRecorder(opts = {}) {
   }
 
   /** The whole 180 seconds, as absolute times. Four segments, matching the
-   *  brief: opening problem statement, live diagnosis, plans, call to action. */
+   *  brief: opening problem statement, live diagnosis, plans, call to action.
+   *
+   *  No beat applies a scale. A subject is centred with the page's own
+   *  scrolling and then simply left there, shown at the size the product
+   *  renders it — so the framing of shot 1 and shot 20 differ only by scroll
+   *  position, never by magnification. */
   function beats() {
     return [
       /* ---- 0:00–0:45 · the problem, and the header that answers it ---- */
@@ -289,28 +310,27 @@ export function initRecorder(opts = {}) {
         run: async () => {
           // The opening dissolve covers the swap from the recorder panel to
           // the landing page, so the file never contains a frame of the
-          // filming rig. The reset happens under it, and the chapter opens
-          // wide before pushing in on its first subject.
-          await fx.wipe("dissolve", () => { fx.reset(); nav.goLanding(); });
-          await hl("#main .hero__title", 3500, { zoom: fx.ZOOM_MID });
+          // filming rig.
+          await fx.wipe("dissolve", () => nav.goLanding());
+          await hl("#main .hero__title", 4200);
         },
       },
-      { at: 6_000, seg: "rec_seg1", run: () => hl(".hero__sub", 3000) },
-      { at: 11_500, seg: "rec_seg1", run: () => hl(".steps", 3000, { zoom: fx.ZOOM_WIDE }) },
-      { at: 17_000, seg: "rec_seg1", run: () => hl("#modules .lgrid", 2800, { zoom: fx.ZOOM_WIDE }) },
-      { at: 22_500, seg: "rec_seg1", run: () => hl("#why .lgrid", 2800, { zoom: fx.ZOOM_WIDE }) },
-      { at: 28_000, seg: "rec_seg1", run: () => hl("#landing .brand", 4500, { zoom: fx.ZOOM_TIGHT }) },
-      // Pull back to the whole hero and breathe before the chapter turns.
-      { at: 34_500, seg: "rec_seg1", run: () => hl("#main .hero__copy", 4000, { zoom: fx.ZOOM_WIDE }) },
-      { at: 41_000, seg: "rec_seg1", run: () => fx.wander(3600) },
+      { at: 6_500, seg: "rec_seg1", run: () => hl(".hero__sub", 3400) },
+      { at: 11_500, seg: "rec_seg1", run: () => hl(".steps", 3400) },
+      { at: 17_000, seg: "rec_seg1", run: () => hl("#modules .lgrid", 3000) },
+      { at: 22_000, seg: "rec_seg1", run: () => hl("#why .lgrid", 3000) },
+      { at: 27_500, seg: "rec_seg1", run: () => hl("#landing .brand", 4500) },
+      // Back to the hero and breathe before the chapter turns.
+      { at: 33_500, seg: "rec_seg1", run: () => hl("#main .hero__copy", 4500) },
+      { at: 39_500, seg: "rec_seg1", run: () => fx.wander(5000) },
 
       /* ---- 0:45–1:45 · a real photograph, a real diagnosis ---- */
       {
         at: 45_000,
         seg: "rec_seg2",
         run: async () => {
-          await fx.wipe("sweep", () => { fx.reset(); nav.goPanel("studio"); });
-          await hl("#dropzone", 4000, { zoom: fx.ZOOM_MID });
+          await fx.wipe("sweep", () => nav.goPanel("studio"));
+          await hl("#dropzone", 4500);
         },
       },
       // Drawn only. A real click here would open a file picker over the
@@ -323,12 +343,12 @@ export function initRecorder(opts = {}) {
         seg: "rec_seg2",
         run: async () => {
           loadSample();
-          await hl("#preview-wrap", 4000, { zoom: fx.ZOOM_MID });
+          await hl("#preview-wrap", 4500);
         },
       },
-      { at: 59_000, seg: "rec_seg2", run: () => hl("#analyze", 2500, { zoom: fx.ZOOM_TIGHT }) },
+      { at: 58_500, seg: "rec_seg2", run: () => hl("#analyze", 3000) },
       {
-        at: 63_000,
+        at: 62_500,
         seg: "rec_seg2",
         run: async () => {
           // The real request. Whatever comes back — fast, slow or a failure —
@@ -337,11 +357,11 @@ export function initRecorder(opts = {}) {
           await press("#analyze", { real: true, hold: 400 });
           const ok = await fx.wanderUntil(waitForResults(RESULT_WAIT_MS));
           if (!ok) return; // the interface is already showing the real outcome
-          await hl("#summary", 5000, { zoom: fx.ZOOM_TIGHT });
+          await hl("#summary", 6000);
         },
       },
-      { at: 78_000, seg: "rec_seg2", run: () => hl("#badges", 3000) },
-      { at: 83_000, seg: "rec_seg2", run: () => hl("#verdict-ar", 3000, { zoom: fx.ZOOM_TIGHT }) },
+      { at: 78_000, seg: "rec_seg2", run: () => hl("#badges", 3500) },
+      { at: 83_000, seg: "rec_seg2", run: () => hl("#verdict-ar", 3500) },
       // Flip away and back. The wipe covers the re-render, which otherwise
       // reads as a glitch rather than as the same verdict in another script.
       {
@@ -356,7 +376,7 @@ export function initRecorder(opts = {}) {
           await fx.wipe("dissolve", flipLanguage);
         },
       },
-      { at: 92_000, seg: "rec_seg2", run: () => hl("#summary", 3500) },
+      { at: 92_000, seg: "rec_seg2", run: () => hl("#summary", 4000) },
       {
         at: 98_000,
         seg: "rec_seg2",
@@ -374,16 +394,16 @@ export function initRecorder(opts = {}) {
         at: 105_000,
         seg: "rec_seg3",
         run: async () => {
-          await fx.wipe("sweep", () => { fx.reset(); nav.goPanel("pricing"); });
-          await hl(".plans", 3800, { zoom: fx.ZOOM_WIDE });
+          await fx.wipe("sweep", () => nav.goPanel("pricing"));
+          await hl(".plans", 4000);
         },
       },
-      { at: 111_500, seg: "rec_seg3", run: () => hlAt(".plans .plan", 0, 3800) },
-      { at: 118_000, seg: "rec_seg3", run: () => hlAt(".plans .plan", 1, 3800) },
-      { at: 124_500, seg: "rec_seg3", run: () => hlAt(".plans .plan", 2, 3800) },
-      { at: 131_000, seg: "rec_seg3", run: () => hl(".pricing-note", 3000, { zoom: fx.ZOOM_WIDE }) },
+      { at: 111_000, seg: "rec_seg3", run: () => hlAt(".plans .plan", 0, 4000) },
+      { at: 117_500, seg: "rec_seg3", run: () => hlAt(".plans .plan", 1, 4000) },
+      { at: 124_000, seg: "rec_seg3", run: () => hlAt(".plans .plan", 2, 4000) },
+      { at: 130_500, seg: "rec_seg3", run: () => hl(".pricing-note", 3400) },
       {
-        at: 136_500,
+        at: 135_000,
         seg: "rec_seg3",
         run: async () => {
           // The dialog is opened by the same call registration hands off to.
@@ -392,17 +412,17 @@ export function initRecorder(opts = {}) {
           // than this dialog — implying otherwise is exactly the fabrication
           // this recorder exists to avoid. The modal arrives under the wipe
           // and the pointer glides into it afterwards.
-          await fx.wipe("dissolve", () => { fx.reset(); openSubscription(); });
-          await hl("#su-modal .modal__panel", 4000, { zoom: fx.ZOOM_MID, overlay: true });
+          await fx.wipe("dissolve", openSubscription);
+          await hl("#su-modal .modal__panel", 4500);
         },
       },
       // The checkout fields are filmed on purpose — they carry their own
       // "nothing is charged" banner, so the video shows the demo as a demo.
-      { at: 144_000, seg: "rec_seg3", run: () => hl("#pay-form", 4000, { zoom: fx.ZOOM_TIGHT, overlay: true }) },
+      { at: 142_000, seg: "rec_seg3", run: () => hl("#pay-form", 6000) },
 
       /* ---- 2:30–3:00 · the call to action ---- */
       {
-        at: 150_500,
+        at: 149_000,
         seg: "rec_seg4",
         run: async () => {
           // The pointer travels to the dialog's own close button while the
@@ -412,17 +432,16 @@ export function initRecorder(opts = {}) {
           // for a third of a second.
           await fx.tap("#su-modal .modal__head [data-close]", { real: false, hold: 380 });
           await fx.wipe("sweep", () => {
-            fx.reset();
             press("#su-modal .modal__head [data-close]", { real: true, hold: 0 });
             nav.goPanel("dashboard");
           });
-          await hl("#app-cta", 4500, { zoom: fx.ZOOM_MID });
+          await hl("#app-cta", 5000);
         },
       },
-      { at: 160_000, seg: "rec_seg4", run: () => hl("#app-cta a", 5000, { zoom: fx.ZOOM_TIGHT }) },
-      { at: 166_500, seg: "rec_seg4", run: () => hl("#app .brand", 4000, { zoom: fx.ZOOM_WIDE }) },
+      { at: 158_000, seg: "rec_seg4", run: () => hl("#app-cta a", 5000) },
+      { at: 165_000, seg: "rec_seg4", run: () => hl("#app .brand", 4000) },
       // Ends on the call to action and the repository link, in frame, still.
-      { at: 172_000, seg: "rec_seg4", run: () => hl("#app-cta", 6000, { zoom: fx.ZOOM_MID }) },
+      { at: 171_000, seg: "rec_seg4", run: () => hl("#app-cta", 6000) },
     ];
   }
 
@@ -537,10 +556,16 @@ export function initRecorder(opts = {}) {
     let stream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        // 60 is requested, not assumed. What the tab actually delivers is
-        // read back off the track and shown in the output panel — a claim of
-        // "60fps" that the capture did not honour would be a lie in the file.
-        video: { frameRate: { ideal: 60, max: 60 } },
+        // 60 is requested, not assumed. The same goes for 4K, and harder:
+        // `getDisplayMedia` captures the tab or the screen as it physically
+        // is and cannot invent pixels, so 3840×2160 lands only on a display
+        // that already has them. Both numbers are read back off the track and
+        // shown, so nobody ends up believing they shot 4K on a 1080p screen.
+        video: {
+          frameRate: { ideal: 60, max: 60 },
+          width: { ideal: 3840 },
+          height: { ideal: 2160 },
+        },
         audio: false,
       });
     } catch {
@@ -569,7 +594,7 @@ export function initRecorder(opts = {}) {
     state.recorder.start(CHUNK_MS);
     state.running = true;
     state.startedAt = Date.now();
-    reportFps(stream);
+    reportCapture(stream);
 
     els.out.classList.add("hidden");
     els.start.classList.add("hidden");

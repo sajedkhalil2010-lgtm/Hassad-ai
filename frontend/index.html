@@ -250,6 +250,14 @@
       </button>
 
       <p class="snav__label" data-i18n="group_dev">أدوات المطوّر</p>
+      <!-- Motion preview, not a product feature: it plays the three-minute
+           choreography live in this tab so the easing and the dwell times can
+           be judged before anything is filmed. It records nothing, submits
+           nothing and invents no verdict. See js/trailer.js. -->
+      <button type="button" class="snav__item" id="trailer-play">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5Z"/></svg>
+        <span data-i18n="nav_trailer">تشغيل العرض الترويجي</span>
+      </button>
       <!-- Shooting rig, not a product feature: it films the real interface on
            a fixed clock and exports whatever the browser can mux. See
            js/record.js for what it will and will not fabricate. -->
@@ -648,9 +656,11 @@
             </a>
             <p class="rec__meta">
               <span class="pill pill--check"><i class="pill__dot"></i><span id="rec-out-format">MP4</span></span>
-              <!-- Read back off the capture track, not copied from what was
-                   requested: the browser may commit fewer frames than asked. -->
+              <!-- Both read back off the capture track, not copied from what
+                   was requested: the browser may commit fewer frames and
+                   fewer pixels than it was asked for. -->
               <span class="pill pill--check"><i class="pill__dot"></i><span data-i18n="rec_fps">إطار/ثانية</span> <span id="rec-fps">—</span></span>
+              <span class="pill pill--check"><i class="pill__dot"></i><span data-i18n="rec_res">الدقة</span> <span id="rec-res">—</span></span>
               <span class="rec__size" id="rec-out-size">—</span>
             </p>
           </div>
@@ -661,7 +671,13 @@
                are drawn on top of a genuine run. They change how a shot is
                framed, never what the product does — so nobody takes the
                export for an untouched capture. -->
-          <p class="rec__note" data-i18n="rec_fx">طبقة سينمائية فوق التسجيل: تكبير وتموضع للكاميرا، انتقالات بين الفصول، ومؤشر فأرة مرسوم ينزلق بين الأزرار. هي عرض تقديمي فقط — لا تغيّر ما يفعله المنتج، والتشخيص على الشاشة هو نتيجة النموذج الحقيقية، بطيئة كانت أو فاشلة.</p>
+          <p class="rec__note" data-i18n="rec_fx">طبقة عرض تقديمي فوق التسجيل: انتقالات بين الفصول، إضاءة مركزية تُعتّم بقية الشاشة، ومؤشر فأرة مرسوم ينزلق بين الأزرار. الإطار ثابت بالكامل بلا أي تكبير أو تصغير. لا تغيّر الطبقة ما يفعله المنتج، والتشخيص على الشاشة هو نتيجة النموذج الحقيقية، بطيئة كانت أو فاشلة.</p>
+
+          <!-- The resolution is requested and then read back. A capture
+               cannot exceed the display it came from, so 4K lands only on a
+               screen that already has 4K — and the panel shows what was
+               really committed rather than what was asked for. -->
+          <p class="rec__note" data-i18n="rec_res_note">يُطلب تسجيل بدقة 4K (3840×2160) ومعدل 60 إطاراً في الثانية، وتُعرض القيم الفعلية بعد الالتقاط. لا يستطيع المتصفح إنشاء دقة أكبر من شاشته: على شاشة 1080p ستحصل على 1080p.</p>
         </div>
       </section>
 
@@ -963,6 +979,17 @@
 <!-- Confirmation that outlives the dialog which produced it. A fixed notice
      rather than a status line inside the modal, because the reader is being
      handed to the workspace and has to still see the answer there. -->
+<!-- Trailer HUD. Purely a preview affordance: it is what lets the operator see
+     which chapter is playing and stop early. Hidden unless a preview is
+     running, and it never takes a click except on its own stop control. -->
+<div class="trailerhud hidden" id="trailer-hud" aria-hidden="true">
+  <span class="trailerhud__chapter" id="trailer-chapter"></span>
+  <span class="trailerhud__time" id="trailer-elapsed">00:00 / 03:00</span>
+  <button type="button" class="trailerhud__stop" id="trailer-stop">
+    <span data-i18n="tr_stop">إيقاف المعاينة</span>
+  </button>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script type="module" src="/assets/js/app.js"></script>

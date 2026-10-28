@@ -136,7 +136,7 @@ def main() -> int:
     # proves each one resolves to a real export.
     CORE_MODULES = {"api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
                     "i18n.js", "history.js", "pricing.js", "subscribe.js",
-                    "record.js", "recordfx.js", "app.js"}
+                    "record.js", "recordfx.js", "trailer.js", "app.js"}
     check("all core modules are present on disk",
           CORE_MODULES <= set(modules),
           f"missing {sorted(CORE_MODULES - set(modules))}")
@@ -228,7 +228,9 @@ def main() -> int:
         # record.js looks it up so a vanished panel is reported loudly.
         "rec-panel", "rec-start", "rec-stop", "rec-status", "rec-elapsed",
         "rec-seg", "rec-sample", "rec-sample-name", "rec-download",
-        "rec-out", "rec-out-size", "rec-out-format", "rec-fps",
+        "rec-out", "rec-out-size", "rec-out-format", "rec-fps", "rec-res",
+        # Preview-only trailer: the sidebar trigger and its HUD readouts.
+        "trailer-play", "trailer-chapter", "trailer-elapsed", "trailer-stop",
     }
     referenced = set()
     for src in modules.values():

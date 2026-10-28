@@ -16,7 +16,7 @@ FAIL = 0
 #: ES modules the page loads. app.js is the entry; it imports the rest.
 MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
            "i18n.js", "history.js", "pricing.js", "subscribe.js",
-           "record.js", "recordfx.js", "app.js")
+           "record.js", "recordfx.js", "trailer.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
@@ -460,40 +460,43 @@ def main() -> int:
           and "hassad-ai-demo-3min." in rec
           and "URL.createObjectURL" in rec and "URL.revokeObjectURL" in rec)
 
-    print("\n=== cinematic layer (camera, transitions, pointer) ===")
+    print("\n=== presentation layer (pointer, light, transitions) ===")
     fx = modules["recordfx.js"]
 
-    check("the cinematic layer is loaded and driven by the recorder",
+    check("the presentation layer is loaded and driven by the recorder",
           "recordfx.js" in MODULES
-          and re.search(r'import\s*\{\s*initCinema\s*\}\s*from\s*"\./recordfx\.js"',
+          and re.search(r'import\s*\{\s*initPresentation\s*\}\s*from\s*"\./recordfx\.js"',
                         rec) is not None
-          and "initCinema()" in rec and "fx.begin()" in rec and "fx.end()" in rec)
+          and "initPresentation()" in rec and "fx.begin()" in rec and "fx.end()" in rec)
 
-    # The camera is a transform on the page that is already being recorded, so
-    # a zoom in the export is a genuine camera move over genuine pixels. An
-    # offscreen canvas would instead be redrawing the product, which is the
-    # line the recorder has held since it was first built.
-    check("the camera transforms the real page, it does not redraw it",
-          "transformOrigin" in fx and "scale(" in fx
-          and not re.search(r"captureStream|createElement\(\s*[\"']canvas", fx))
+    # The framing is fixed for the whole take. No scale is ever applied to any
+    # product layer, so shot one and shot twenty differ only by scroll
+    # position — never by magnification. Checked from both directions, because
+    # either file could reintroduce it: the layer must contain no scaling
+    # primitive, and the timeline must contain no request for one.
+    check("the layer applies no zoom anywhere",
+          "scale(" not in fx and "transformOrigin" not in fx
+          and re.search(r"\bZOOM_[A-Z]+\b", fx) is None,
+          "a scaling primitive survived in the presentation layer")
+    check("the timeline never asks for a camera move",
+          re.search(r"fx\.ZOOM_|fx\.reset\(|fx\.pullback\(|zoom:", rec) is None,
+          "a zoom request survived in the timeline")
+
+    # The only transform in the entire layer is the pointer's own position.
+    # Every other element is left exactly where the product put it — asserted
+    # by counting, so a second transform on a product layer cannot slip in.
+    writes = re.findall(r"([\w.]+)\.style\.transform\s*=", fx)
+    check("the only transform written is the pointer's own position",
+          writes == ["els.pointer"], f"transform writes={writes}")
+
     check("the pointer is drawn, never recorded",
           "recursor" in fx and "translate3d" in fx
           and "requestAnimationFrame" in fx)
 
-    # The arrival point is projected from the scale the rect was MEASURED
-    # under. Inverting with the destination instead would put the pointer in
-    # the wrong place exactly when the push-in is largest — which is most of
-    # the video, and is invisible to every other check here.
-    check("the pointer is aimed with the scale it was measured under",
-          "const fromZoom = live.zoom;" in fx
-          and "applyZoom(zoom, layers);" in fx
-          and re.search(r"finalCenter\(node,\s*zoom,\s*fromZoom\)", fx) is not None
-          and re.search(r"finalCenter\(node,\s*zoom\)\s*{", fx) is None)
-
-    # Framing must never become layout. A width, height, top or left write
-    # forces the browser to re-run layout and paint on every animation frame,
-    # which is precisely what would drop a 60fps capture to 30.
-    check("every camera animation is compositor work only",
+    # Nothing may force layout on an animation frame. A width, height, top or
+    # left write re-runs layout and paint continuously, which is precisely
+    # what would drop a 60fps capture to 30.
+    check("no animation forces layout",
           not re.search(r"\.style\.(width|height|top|left|right|bottom|background|margin|padding)\b", fx),
           "layout-forcing style write found")
 
@@ -515,27 +518,35 @@ def main() -> int:
     check("the model wait is neither padded nor cut",
           "wanderUntil(waitForResults(RESULT_WAIT_MS))" in rec)
 
-    # Scroll is computed from layout (offsetTop), which no transform can
-    # move. getBoundingClientRect would report the camera's own output back
-    # to the camera, and the two would drift apart.
-    check("scroll is measured from layout, not from the transformed box",
+    # Scroll is computed from layout (offsetTop). It is the only thing that
+    # ever moves a shot, and it cannot feed back into itself.
+    check("scroll is measured from layout",
           "function docTop(node)" in fx and "offsetTop" in fx
           and "scrollIntoView" not in rec)
-    check("a subject centred in frame stays centred while it is magnified",
-          "50% ${Math.round(window.scrollY + window.innerHeight / 2)}px" in fx)
 
-    # The rate is requested and then read back. Claiming 60 in the file when
-    # the browser committed 34 would be a lie the operator can disprove.
+    # 60fps and 4K are both requested, then read back off the track. Claiming
+    # either when the browser did not deliver it would be a lie the operator
+    # can disprove — and the resolution matters more still, because a capture
+    # cannot exceed the display it came from.
     check("60fps is requested, and the real rate is read back",
           "ideal: 60" in rec and "getSettings()" in rec
           and 'id="rec-fps"' in html and "rec_fps" in modules["i18n.js"])
+    check("4K is requested, and the real size is read back",
+          "ideal: 3840" in rec and "ideal: 2160" in rec
+          and 'id="rec-res"' in html and "rec_res" in modules["i18n.js"]
+          and "els.outRes" in rec)
+    check("the displayed size comes off the track, not from the request",
+          "els.outRes.textContent = (s.width && s.height)" in rec)
+    check("no upscaling is used to fake a larger file",
+          re.search(r"captureStream|createElement\(\s*[\"']canvas", rec + fx) is None)
     check("the bitrate was raised to carry 60 frames a second",
           re.search(r"BITRATE\s*=\s*12_000_000", rec) is not None)
 
-    # The camera comes down again. A scale left on #app would be a bug the
-    # operator met in their next ordinary session, long after the export.
-    check("the camera is removed again when the take ends",
-          re.search(r"layer\.style\.transform = \"\";?\s*\n\s*layer\.style\.transformOrigin", fx) is not None
+    # The rig comes down again. An overlay left mounted, or the real cursor
+    # still hidden, would be a bug the operator met in their next ordinary
+    # session, long after the export was safely on disk.
+    check("the rig is taken down when the take ends",
+          "function unmount()" in fx and "unmount();" in fx
           and "document.body.classList.remove" in fx)
 
     # Chapter changes must reach the file as a transition rather than as a
@@ -573,12 +584,14 @@ def main() -> int:
     check("each chapter changes under cover of a transition",
           len(swaps) >= 4 and len(wipes) >= len(swaps),
           f"{len(swaps)} of {len(wipes)} wipes carry a screen swap")
-    # Each of those openings starts from a neutral framing. Cutting from a
-    # 1.62x close-up straight into the next chapter would leave the move
-    # half-finished on the first frame of the new one.
-    check("each chapter opens wide rather than mid-push",
-          rec.count("fx.reset()") >= 4,
-          f"resets={rec.count('fx.reset()')}")
+    # Each of those openings lands on a screen the reader can recognise at
+    # once. The framing itself is the same fixed one all the way through —
+    # the layer has no camera — so what carries the chapter change is the
+    # transition and the scroll, checked above and below.
+    check("the chapters are the screens the brief names",
+          all('nav.goPanel("%s")' % p in rec for p in ("studio", "pricing", "dashboard"))
+          and "nav.goLanding()" in rec,
+          "a named chapter is not driven by the real navigation")
 
     # The overlays must not eat the operator's clicks, and must sit above the
     # dialogs they are framing.
@@ -599,8 +612,116 @@ def main() -> int:
     # cannot see classes built inside template literals, so these are pinned
     # explicitly.
     for cls in ("rec-veil", "rec-wipe", "rec-wipe--sweep", "recursor",
-                "recursor__ptr", "recursor__ripple", "rec-tap", "rec-hl"):
+                "recursor__ptr", "recursor__ripple", "rec-tap", "rec-hl",
+                "rec-hover", "trailerhud", "trailerhud__chapter",
+                "trailerhud__time", "trailerhud__stop"):
         check(f".{cls} is styled", f".{cls}" in css.text)
+
+    # ------------------------------------------------------------------
+    # The preview. A second module that moves the same pointer would be a
+    # second module to keep honest, so the trailer is a thin beat list over
+    # the presentation layer the recorder already uses — which is also what
+    # makes a preview promise anything about the recording at all.
+    # ------------------------------------------------------------------
+    print("\n=== demo trailer (motion preview) ===")
+    tr = modules["trailer.js"]
+    app = modules["app.js"]
+
+    # Absence is checked against the code, never the prose. A module that
+    # documents what it refuses to do necessarily names the primitives it
+    # refuses — "no download, no MediaRecorder" is the sentence that explains
+    # the file, and a regex cannot tell that sentence from the use of one.
+    # String literals are left alone because the assertions below quote them.
+    def code_only(source):
+        source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        return re.sub(r"//[^\n]*", "", source)
+
+    tr_code = code_only(tr)
+
+    check("trailer is loaded by the page and shares the recorder's layer",
+          "trailer.js" in MODULES
+          and re.search(r'import\s*\{\s*initTrailer\s*\}\s*from\s*"\./trailer\.js"', app)
+          is not None
+          and re.search(r'import\s*\{\s*initPresentation\s*\}\s*from\s*"\./recordfx\.js"', tr)
+          is not None
+          and "initPresentation()" in tr and "initTrailer(" in app)
+
+    # A preview that recorded anything would be a second recorder, and a
+    # second thing to keep honest. Asserted by absence in the whole module.
+    check("the preview records nothing",
+          re.search(r"getDisplayMedia|MediaRecorder|captureStream|"
+                    r"createObjectURL|\bdownload\b|showSaveFilePicker",
+                    tr_code) is None,
+          "a recording primitive survived in the preview")
+
+    # And it submits nothing. No HTTP helper, no request primitive — the
+    # only live call in the entire sequence is the language toggle, which
+    # is the product's own control and never leaves the browser.
+    check("the preview submits nothing",
+          re.search(r'from\s*"\./api\.js"|fetch\s*\(|XMLHttpRequest|sendBeacon',
+                    tr_code) is None,
+          "the preview reaches the network")
+
+    # The line that matters most. The diagnosis chapter presses the Analyze
+    # control as a DRAWN gesture, so it can never fire a request, and every
+    # frame of a real verdict is guarded by asking whether one is genuinely
+    # on screen. Nothing is rendered to fill the gap when there is not.
+    check("the preview never manufactures a verdict",
+          'press("#analyze", { real: false' in tr
+          and tr.count('visible("results")') == 3
+          and all(tr.count(sel) == 1 for sel in ('hl("#summary"', 'hl("#badges"',
+                                                 'hl("#verdict-ar"'))
+          and re.search(r"synthes|fabricat|placeholder result|fakeResult", tr,
+                        re.I) is None)
+    # The only genuine activation in the whole sequence is the language
+    # toggle, which is real UI and does not leave the page.
+    check("the only control it truly presses is its own language toggle",
+          tr.count("real: true") == 2
+          and all(m.count("real: true") and "[data-lang-toggle]" in m
+                  for m in re.findall(r"press\([^)]*\{[^}]*real: true", tr)))
+
+    # It opens in English for a review audience, and puts the operator's own
+    # choice back afterwards — setLang writes to storage, so a preview that
+    # stopped would otherwise leave the app in a language nobody chose.
+    check("the preview opens in English and restores the operator's choice",
+          'setLang("en")' in tr and "previousLang" in tr
+          and re.search(r"nav\.setLang\(state\.previousLang\)", tr) is not None)
+
+    # The five chapters of the brief. Chapter one is set when the preview
+    # starts rather than inside the beat list, so the four that open a new
+    # screen are the ones whose order is checked — against the file, which
+    # for a beat list written in clock order is the same as the clock.
+    beat_order = [tr.index('setChapter("tr_ch%d")' % i) for i in (2, 3, 4, 5)]
+    check("the preview runs the five chapters of the brief, in order",
+          'setChapter("tr_ch1")' in tr and beat_order == sorted(beat_order)
+          and "TOTAL_MS = 180_000" in tr,
+          f"chapter order={beat_order}")
+    check("the preview drives the real navigation",
+          'nav.goPanel("studio")' in tr and 'nav.goPanel("pricing")' in tr
+          and 'nav.goPanel("dashboard")' in tr and "nav.goLanding()" in tr)
+
+    # The chrome: a trigger in the developer group, a HUD that says which
+    # chapter is playing, and a way out that does not need the keyboard.
+    # Every one of these is looked up by a literal id, because an id the
+    # module cannot name is an id it cannot report as missing.
+    check("the trailer has a trigger, a HUD and a way out",
+          all(('id="trailer-%s"' % name) in html
+              for name in ("play", "hud", "stop", "chapter", "elapsed"))
+          and all(re.search(r'\$\(["\']trailer-%s["\']\)' % name, tr)
+                  for name in ("play", "stop")))
+    check("the preview can always be stopped early",
+          "Escape" in tr and "removeEventListener" in tr
+          and re.search(r"state\.clock\s*=\s*setTimeout\(stop, TOTAL_MS\)", tr)
+          is not None)
+
+    # The preview and the take must not diverge. Both use the same layer,
+    # so the fixed framing, the drawn pointer and the transition wipes are
+    # one guarantee rather than two — and neither timeline can quietly ask
+    # for a camera move the other does not know about.
+    check("the preview and the recording cannot drift apart",
+          "fx.begin()" in tr and "fx.end()" in tr
+          and re.search(r"fx\.ZOOM_|fx\.reset\(|fx\.pullback\(|zoom:", tr) is None
+          and "scale(" not in tr)
 
     print("\n=== bilingual coverage ===")
     # data-i18n resolves through t(), which falls back to the key itself —
@@ -652,6 +773,19 @@ def main() -> int:
           not miss_rec_ar, str(miss_rec_ar))
     check(f"all {len(rec_keys)} recorder keys exist in the English pack",
           not miss_rec_en, str(miss_rec_en))
+
+    # The trailer names its chapters dynamically the same way, for the same
+    # reason: they are the words on screen for the whole three minutes.
+    # Searched in the module that uses them, never in the packs — a check that
+    # finds its keys in the dictionary is a check that cannot fail.
+    tr_keys = sorted(set(re.findall(r'["\'](tr_[a-z0-9_]+)["\']',
+                                    modules["trailer.js"])))
+    miss_tr_ar = [k for k in tr_keys if k not in pat(ar_block)]
+    miss_tr_en = [k for k in tr_keys if k not in pat(en_block)]
+    check(f"all {len(tr_keys)} trailer keys exist in the Arabic pack",
+          not miss_tr_ar, str(miss_tr_ar))
+    check(f"all {len(tr_keys)} trailer keys exist in the English pack",
+          not miss_tr_en, str(miss_tr_en))
 
     for endpoint in ("/api/v1/analyze", "/api/v1/chat",
                      "/api/register", "/api/login", "/api/logout", "/api/me"):

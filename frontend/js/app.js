@@ -30,6 +30,7 @@ import { initChat } from "./chat.js";
 import { initDiagnose } from "./diagnose.js";
 import { initHistory } from "./history.js";
 import { initI18n } from "./i18n.js";
+import { initTrailer } from "./trailer.js";
 import { initPricing } from "./pricing.js";
 import { initRecorder } from "./record.js";
 import { initSubscribe } from "./subscribe.js";
@@ -44,6 +45,8 @@ let diagnose = null;
 let auth = null;
 let subscribe = null;
 let recorder = null;
+let trailer = null;
+let i18n = null;
 let conn = null;
 let connLabel = null;
 let poller = null;
@@ -177,7 +180,7 @@ function boot() {
   diagnose = initDiagnose();
   initChat({ getContext: () => diagnose.getContext() });
   initHistory();
-  initI18n();
+  i18n = initI18n();
   // After initI18n so the stored language is already applied when the
   // notice first renders its composed tier label.
   initPricing();
@@ -212,6 +215,18 @@ function boot() {
     goPanel: enterDashboard,
     getUser: () => sessionUser,
     getSubscribe: () => subscribe,
+  });
+
+  /* The motion preview. It shares recordfx.js with the recorder, so what is
+     previewed and what is filmed cannot drift apart — but it records nothing
+     and submits nothing. It is handed the language controls because the
+     sequence opens in English for a review audience and has to put the
+     operator's own choice back when it stops. */
+  trailer = initTrailer({
+    goLanding: showLanding,
+    goPanel: enterDashboard,
+    setLang: i18n ? i18n.setLang : null,
+    currentLang: i18n ? i18n.currentLang : null,
   });
 
   /* Account entry points on the landing page. */
