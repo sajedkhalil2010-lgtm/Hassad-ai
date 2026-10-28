@@ -147,8 +147,30 @@ export function initChat({ getContext } = {}) {
     syncSend();
   }
 
-  /* -------------------------------------------------------------- send -- */
+  /** Replay a canned exchange through the real bubbles, for the recorded
+   *  presentation. It deliberately does NOT touch `history`: a filmed demo
+   *  must not leave a turn behind that the next real question would be
+   *  answered from, as though the model had said it. */
+  async function renderSampleExchange(turns, typingMs) {
+    const list = (Array.isArray(turns) ? turns : []).filter(
+      (turn) => turn && typeof turn.text === "string",
+    );
+    if (!list.length) return;
 
+    dropIntro();
+    show(els.suggestions, false);
+
+    for (let i = 0; i < list.length; i += 1) {
+      if (i > 0 && typingMs > 0) {
+        startTyping();
+        await new Promise((resolve) => setTimeout(resolve, typingMs));
+        stopTyping();
+      }
+      bubble(list[i].role === "user" ? "user" : "bot", list[i].text);
+    }
+  }
+
+  /* -------------------------------------------------------------- send -- */
   async function send(text) {
     const message = text.trim();
     if (!message || busy) return;
@@ -227,5 +249,5 @@ export function initChat({ getContext } = {}) {
   autosize();
   syncSend();
 
-  return { reset };
+  return { reset, renderSampleExchange };
 }

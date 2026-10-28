@@ -129,27 +129,50 @@ This is what guarantees a farmer still receives a real, localized,
 correctly-translated treatment plan when the AI provider is rate-limited or
 offline. Every plan carries a safety disclaimer pointing to the DPA of Tébessa.
 
-### 🎬 Built-in Demo Recorder
+### 🎬 Three-Minute Presentation Recorder
 
-The **Demo Recorder** panel films the real workspace — no offscreen canvas and
-no redrawn frames — and hands back a video file. A simulated pointer glides to
-the actual controls (the studio tab, the upload dropzone, Analyze, the language
-toggle, the pricing panel) and presses them, so the take shows the product
-doing the product's job.
+The **Presentation** panel films the real workspace — no offscreen canvas and no
+redrawn frames — and hands back a finished video. A simulated pointer glides to
+the actual controls (the hero CTA, the upload dropzone, Analyze, the language
+toggle, the pricing panel) and presses them, so the take shows the product doing
+the product's job.
+
+One button runs the whole thing: a three-second countdown, then a fixed
+**180-second** timeline, then an automatic download of
+`Hassad_AI_3Min_Presentation.mp4`.
+
+| Slot | Chapter |
+| --- | --- |
+| 0:00 – 0:45 | The problem and the vision, walked across the landing page |
+| 0:45 – 2:00 | Leaf upload, then the pathology report, severity and treatment ladder |
+| 2:00 – 2:40 | Arabic RTL switch, then the assistant answering in the same language |
+| 2:40 – 3:00 | Open-source close, then the repository card |
 
 - **Capture** — `getDisplayMedia` cropped to the workspace through Region
-  Capture, muxed by `MediaRecorder` at 24 Mbps and 60 fps.
-- **Container** — MP4/H.264 is tried first and the file is named
-  `Hassad_AI_Demo.mp4`; where the browser cannot mux MP4 the export falls back
-  to WebM and keeps the `.webm` extension rather than mislabelling the file.
-- **One click** — start, stop, and the file downloads on its own; container,
-  resolution and duration are reported under the button.
+  Capture, muxed by `MediaRecorder` at 12 Mbps and 60 fps.
+- **Container** — MP4/H.264 is tried first; where the browser cannot mux MP4 the
+  export falls back to WebM and keeps the `.webm` extension rather than
+  mislabelling the file. The container, resolution, duration and audio status are
+  reported under the button.
+- **Narration** — the four chapters are spoken with the Web Speech API and
+  mirrored as burned-in captions, so the film still reads with the sound off.
+- **Interaction is locked** — a transparent layer swallows clicks for the whole
+  take; only the film drives the interface.
 
-Two presses are cosmetic by design: the dropzone (a real click would open a
-file dialog) and Analyze (a real click would wait on a live model). The upload
-itself is real — a real JPEG is placed on the real input — and the report it
-leads to is a sample, badged **SAMPLE** on the card, so a recording never claims
-a live model reading.
+**Audio, stated plainly.** Chrome's speech synthesis is produced by the operating
+system, not by the page, so it cannot be routed into a `MediaStream` node — the
+browser exposes no handle on it. The recorder therefore asks for **system audio**
+alongside the picture. When that track is granted, the voice that plays through
+the speakers is inside the file; when it is not, the export still completes, the
+facts line says `audio silent` / `no audio`, and the panel tells the farmer which
+box to tick next time. It never claims a voiceover that is not there.
+
+Three presses are cosmetic by design: the dropzone (a real click would open a
+file dialog), Analyze (a real click would wait on a live model) and the assistant
+(a real question costs a network round-trip mid-take). The upload itself is real
+— a real JPEG is placed on the real input — and both the report and the assistant
+exchange are samples, badged **SAMPLE** on screen, so a recording never claims a
+live model reading.
 
 ---
 

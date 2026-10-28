@@ -478,41 +478,52 @@
         <p class="empty glass hidden" id="history-empty" data-i18n="history_empty">لا توجد تشخيصات بعد. ابدأ من استوديو التشخيص.</p>
       </section>
 
-      <!-- ===== Demo recorder panel ==================================== -->
-    <section class="panel-view hidden" data-view-panel="recorder">
-      <header class="panel__head">
-        <div class="panel__lead">
-          <h1 class="panel__title" data-i18n="rec_t">مسجّل العرض التجريبي</h1>
-          <p class="panel__hint" data-i18n="rec_hint">يُشغّل جولةً على الواجهة الحقيقية ويسجّلها في فيلم واحد — المؤشّر، الرفع، التقرير، والنطاق.</p>
+      <!-- ===== Presentation recorder ================================== -->
+      <!-- One button, three minutes, one file. The copy says exactly what is
+           filmed and exactly what is not: the report and the assistant
+           exchange are samples badged SAMPLE, and the voiceover only reaches
+           the file when the browser shares system audio. -->
+      <section class="panel-view hidden" data-view-panel="recorder">
+        <header class="panel__head">
+          <div class="panel__lead">
+            <h1 class="panel__title" data-i18n="rec_t">مولّد العرض ثلاثي الدقائق</h1>
+            <p class="panel__hint" data-i18n="rec_hint">زر واحد يسجّل ثلاث دقائق على الواجهة الحقيقية، ثم يهبط بملف MP4 جاهز للعرض — بلا مونتاج.</p>
+          </div>
+        </header>
+
+        <div class="rec glass">
+          <button type="button" class="btn btn--glow rec__go" id="rec-start" data-i18n="rec_start">أنشئ العرض ونزّل MP4</button>
+
+          <div class="rec__meta">
+            <span class="rec__time" id="rec-elapsed" dir="ltr">00:00 / 03:00</span>
+            <button type="button" class="btn btn--outline hidden" id="rec-stop" data-i18n="rec_stop">إيقاف</button>
+          </div>
+
+          <div class="rec__track" aria-hidden="true"><span class="rec__bar" id="rec-bar"></span></div>
+
+          <p class="rec__status" id="rec-status" role="status" aria-live="polite"></p>
+
+          <div class="rec__out hidden" id="rec-out">
+            <a class="btn btn--primary" id="rec-download" href="#" download>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 4v10m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>
+              </svg>
+              <span data-i18n="rec_download">تنزيل الفيلم</span>
+            </a>
+            <p class="rec__file" id="rec-file" dir="ltr"></p>
+            <p class="rec__facts" id="rec-facts" dir="ltr"></p>
+          </div>
         </div>
-      </header>
 
-      <div class="rec glass">
-        <div class="rec__row">
-          <button type="button" class="btn btn--primary" id="rec-start" data-i18n="rec_start">بدء التسجيل</button>
-          <button type="button" class="btn btn--outline hidden" id="rec-stop" data-i18n="rec_stop">إيقاف</button>
-          <span class="rec__time" id="rec-elapsed">00:00 / 00:48</span>
-        </div>
+        <ul class="rec__list">
+          <li data-i18n="rec_li1">الواجهة الحقيقية: الصفحة التعريفية، الرفع، التقرير، تبديل اللغة، والمحادثة.</li>
+          <li data-i18n="rec_li2">تقرير نموذجي موسوم بـ SAMPLE، فلا ينتظر الفيلم ردّ النموذج الحي.</li>
+          <li data-i18n="rec_li3">ثلاث دقائق بالضبط، ثم تنزيل تلقائي باسم Hassad_AI_3Min_Presentation.</li>
+        </ul>
 
-        <div class="rec__track" aria-hidden="true"><span class="rec__bar" id="rec-bar"></span></div>
-
-        <p class="rec__status" id="rec-status" role="status" aria-live="polite"></p>
-
-        <div class="rec__out hidden" id="rec-out">
-          <a class="btn btn--glow" id="rec-download" href="#" download>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 4v10m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/>
-            </svg>
-            <span data-i18n="rec_download">تنزيل الفيديو</span>
-          </a>
-          <p class="rec__file" id="rec-file"></p>
-          <p class="rec__facts" id="rec-facts"></p>
-        </div>
-      </div>
-
-      <p class="rec__note" data-i18n="rec_note">التسجيل يلتقط التبويب نفسه بموافقتك، ويمسح الاستوديو قبل أن يبدأ. والتقرير الذي يظهر في الفيلم مثالٌ موسوم بـ SAMPLE وليس قراءةً من النموذج الحي.</p>
-    </section>
+        <p class="rec__note" data-i18n="rec_note">التعليق الصوتي يُنطق عبر نظام التشغيل، فلا يصل إلى الملف إلا إذا شاركت «الشاشة كاملة» مع «مشاركة صوت النظام». والتقرير والمحادثة في الفيلم نموذجان موسومان بـ SAMPLE، وليسا قراءةً من النموذج الحي.</p>
+      </section>
 
     <!-- ===== Pricing panel (DEMO) ================================== -->
       <!-- Three tiers presented as a UI preview. Nothing here charges:

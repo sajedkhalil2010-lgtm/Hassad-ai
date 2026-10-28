@@ -40,6 +40,7 @@ const body = document.body;
    module scope because openChat/closeChat, the Escape handler and
    refreshConnection all read them, and they outlive any single call. */
 let chatModal = null;
+let chat = null;
 let diagnose = null;
 let auth = null;
 let subscribe = null;
@@ -62,6 +63,15 @@ function enterDashboard(panel = "dashboard") {
   $("app")?.classList.remove("hidden");
   showPanel(panel);
   if (first) window.scrollTo(0, 0);
+}
+
+/** Back to the public face. Only the presentation recorder uses it: the film
+ *  opens on the landing page and walks into the workspace, and a farmer who
+ *  already has a session would otherwise never see the problem statement. */
+function enterLanding() {
+  body.dataset.view = "landing";
+  $("landing")?.classList.remove("hidden");
+  $("app")?.classList.add("hidden");
 }
 
 /* ------------------------------------------------------------- panels -- */
@@ -160,15 +170,16 @@ function boot() {
   // Diagnosis first: the assistant asks it for context whenever a question is
   // sent, so it has to exist before the chat is constructed.
   diagnose = initDiagnose();
-  initChat({ getContext: () => diagnose.getContext() });
+  chat = initChat({ getContext: () => diagnose.getContext() });
   initHistory();
   const i18n = initI18n();
   // After initI18n so the stored language is already applied when the
   // notice first renders its composed tier label.
   initPricing();
-  // Last of the workspace pieces: the tour clicks real controls, so every
-  // one of them has to be wired before it can be filmed.
-  initRecorder({ diagnose, enterDashboard, i18n });
+  // Last of the workspace pieces: the presentation clicks real controls and
+  // plays a sample exchange through the real chat, so every one of them has
+  // to be wired before the camera rolls.
+  initRecorder({ diagnose, chat, enterDashboard, enterLanding, i18n });
 
   // Before initAuth: the registration hook below closes over this handle.
   subscribe = initSubscribe({ onFinish: () => enterDashboard() });

@@ -16,7 +16,7 @@ FAIL = 0
 #: ES modules the page loads. app.js is the entry; it imports the rest.
 MODULES = ("api.js", "dom.js", "auth.js", "diagnose.js", "chat.js",
            "i18n.js", "history.js", "pricing.js", "subscribe.js",
-           "record.js", "app.js")
+           "record.js", "recordfx.js", "app.js")
 
 #: Markers of a Google *identity* integration. Deliberately not the bare word
 #: "google": the typefaces are served from fonts.googleapis.com, which is a
