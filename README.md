@@ -13,6 +13,8 @@
 [![Tests](https://img.shields.io/badge/Tests-802%20passing-brightgreen.svg)](#%EF%B8%8F-testing)
 [![RTL](https://img.shields.io/badge/Locale-Arabic%20%7C%20English-8b5cf6.svg)](#-adaptive-bilingual-ai-engine)
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sajedkhalil2010-lgtm/Hassad-AI)
+
 ---
 
 ## 📋 Executive Summary
